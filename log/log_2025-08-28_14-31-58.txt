@@ -1,0 +1,9 @@
+2025-08-28 14:31:58,842 - INFO - Started ED screener process
+2025-08-28 14:31:59,546 - INFO - Processed 1/7
+2025-08-28 14:31:59,574 - INFO - Processed 2/7
+2025-08-28 14:31:59,602 - INFO - Processed 3/7
+2025-08-28 14:31:59,630 - INFO - Processed 4/7
+2025-08-28 14:31:59,660 - INFO - Processed 5/7
+2025-08-28 14:31:59,691 - INFO - Processed 6/7
+2025-08-28 14:31:59,749 - INFO - Processed 7/7
+2025-08-28 14:31:59,781 - INFO - Saved to /Users/arche/Documents/Python/ARCHEscreeningTool/output_EDscreener_export_2025-08-28 14-31.xlsx

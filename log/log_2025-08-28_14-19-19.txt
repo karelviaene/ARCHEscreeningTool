@@ -1,0 +1,12 @@
+2025-08-28 14:19:19,385 - INFO - Started ED screener process
+2025-08-28 14:19:19,386 - INFO - Selected input file: /Users/arche/Documents/Python/ARCHEscreeningTool/TestCAS.xlsx
+2025-08-28 14:19:19,386 - INFO - Selected output folder: /Users/arche/Documents/Python/ARCHEscreeningTool
+2025-08-28 14:19:19,912 - INFO - PPP ED file already downloaded today.
+2025-08-28 14:19:19,953 - INFO - Processed 1/7
+2025-08-28 14:19:19,986 - INFO - Processed 2/7
+2025-08-28 14:19:20,011 - INFO - Processed 3/7
+2025-08-28 14:19:20,038 - INFO - Processed 4/7
+2025-08-28 14:19:20,063 - INFO - Processed 5/7
+2025-08-28 14:19:20,089 - INFO - Processed 6/7
+2025-08-28 14:19:20,113 - INFO - Processed 7/7
+2025-08-28 14:19:20,131 - INFO - Saved to /Users/arche/Documents/Python/ARCHEscreeningTool/output/EDscreener_export_2025-08-28 14-19.xlsx
