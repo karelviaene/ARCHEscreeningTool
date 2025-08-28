@@ -12,6 +12,20 @@ from datetime import datetime
 from io import BytesIO
 import openpyxl
 
+import logging
+
+def setup_logging(folder_path):
+    log_folder = os.path.join(folder_path, "log")
+    os.makedirs(log_folder, exist_ok=True)
+    log_filename = f"log_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.txt"
+    log_path = os.path.join(log_folder, log_filename)
+    logging.basicConfig(
+        filename=log_path,
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+    return log_path
+
 class EDScreenerApp:
     def __init__(self, root):
         self.root = root
@@ -25,7 +39,7 @@ class EDScreenerApp:
         self.file_label = tk.Label(root, text="No file selected")
         self.file_label.pack()
 
-        tk.Button(root, text="Select Output Folder", command=self.select_folder).pack()
+        tk.Button(root, text="Select Folder", command=self.select_folder).pack()
         self.folder_label = tk.Label(root, text=f"Output folder: {self.folder_path}")
         self.folder_label.pack()
 
@@ -39,7 +53,7 @@ class EDScreenerApp:
 
     def select_folder(self):
         self.folder_path = filedialog.askdirectory()
-        self.folder_label.config(text=f"Output folder: {self.folder_path}")
+        self.folder_label.config(text=f"Folder: {self.folder_path}")
 
     def run_screener(self):
         if not self.file_path:
@@ -49,6 +63,12 @@ class EDScreenerApp:
         threading.Thread(target=self.process_data).start()
 
     def process_data(self):
+        # Add logging
+        log_path = setup_logging(self.folder_path)
+        logging.info("Started ED screener process")
+        logging.info(f"Selected input file: {self.file_path}")
+        logging.info(f"Selected output folder: {self.folder_path}")
+
         try:
             CASallpd = pd.read_excel(self.file_path)
             if "CAS" not in CASallpd.columns:
@@ -112,14 +132,14 @@ class EDScreenerApp:
                     file_path_PPP_ED = os.path.join(databases_folder, file_name)
                     # Only download if file was not downloaded already today
                     if file_downloaded_today(file_path_PPP_ED):
-                        self.status_label.config(text="PPP ED file already downloaded today.")
+                        logging.info("PPP ED file already downloaded today.")
                     else:
                         if ED_PPP.status_code == 200:  # Download to databases folder
                             with open(file_path_PPP_ED, "wb") as file:
                                 file.write(ED_PPP.content)
-                            self.status_label.config(text=f"Saved PPP ED list: {file_path_PPP_ED}")
+                            logging.info(f"Saved PPP ED list: {file_path_PPP_ED}")
                         else:
-                            self.status_label.config(text=f"Failed to download PPP ED file: {file_url}")
+                            logging.info(f"Failed to download PPP ED file: {file_url}")
 
             # Process each CAS
             for i, entry in enumerate(clp_info):
@@ -142,16 +162,19 @@ class EDScreenerApp:
                         if found:
                             break
                 self.status_label.config(text=f"Processed {i+1}/{N_CAS}")
+                logging.info(f"Processed {i+1}/{N_CAS}")
 
             # Save results
             df = pd.DataFrame(clp_info)
             now = datetime.now().strftime("%Y-%m-%d %H-%M")
-            output_file = os.path.join(self.folder_path, f"EDscreener_export_{now}.xlsx")
+            output_file = os.path.join(self.folder_path, f"output/EDscreener_export_{now}.xlsx")
             df.to_excel(output_file, index=False)
-            self.status_label.config(text=f"Saved to {output_file}")
+            logging.info(f"Saved to {output_file}")
+            self.status_label.config(text="Finished")
+
 
         except Exception as e:
-            self.status_label.config(text=f"Error: {str(e)}")
+            logging.info(f"Error: {str(e)}")
 
 # Run the app
 if __name__ == "__main__":
