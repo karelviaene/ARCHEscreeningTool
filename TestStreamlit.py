@@ -1,17 +1,27 @@
+
 import streamlit as st
 import pandas as pd
 import re
 import requests
 from bs4 import BeautifulSoup
-from io import BytesIO
+from io import BytesIO, StringIO
 import openpyxl
 from datetime import datetime
+import logging
+import zipfile
 
 st.title("ED Screener Tool")
 
 uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
 
+# In-memory log stream
+if "log_stream" not in st.session_state:
+    st.session_state.log_stream = StringIO()
+    logging.basicConfig(stream=st.session_state.log_stream, level=logging.INFO,
+                        format='%(asctime)s - %(levelname)s - %(message)s')
+
 def process_data(file):
+    logging.info("Started ED screener process")
     CASallpd = pd.read_excel(file, engine="openpyxl")
     if "CAS" not in CASallpd.columns:
         st.error("Error: 'CAS' column not found.")
@@ -41,14 +51,14 @@ def process_data(file):
         "PACT: SVHC link",
         "CoRAP: Yes/No", "CoRAP: Initial grounds of Concern", "CoRAP: Status", "CoRAP: Latest update"
     ]
-    for entry in clp_info:
-        for key in key_names:
-            entry[key] = "-"
+    # Add empty key-value pairs using dictionary unpacking
+    clp_info = [{**entry, **{key: "-" for key in key_names}} for entry in clp_info]
 
     efsaPPP_url = "https://www.efsa.europa.eu/en/applications/pesticides"
     PPP_ED_string = "overview-endocrine-disrupting-assessment-pesticide-active-substances"
     responseEFSA = requests.get(efsaPPP_url)
     ED_PPP = None
+    database_bytes = None
 
     if responseEFSA.status_code == 200:
         soupEFSA = BeautifulSoup(responseEFSA.text, "html.parser")
@@ -57,39 +67,68 @@ def process_data(file):
         if matching_links:
             file_url = requests.compat.urljoin(efsaPPP_url, matching_links[0])
             ED_PPP = requests.get(file_url)
+            if ED_PPP.status_code == 200:
+                database_bytes = BytesIO(ED_PPP.content)
+                logging.info("Downloaded EFSA PPP ED database")
 
-    if ED_PPP and ED_PPP.status_code == 200:
-        excel_data = BytesIO(ED_PPP.content)
-        workbook = openpyxl.load_workbook(excel_data)
-        sheet = workbook.worksheets[0]
+    ### LOOP OVER ALL CAS NUMBERS
+    i = 0
+    while i < len(clp_info):
+        CAS = CASall[i]
+        clp_info[i]["Input"] = CAS
+        st.write(f"Checking chemical: {clp_info[i]["Input"]}")
 
-        for i, entry in enumerate(clp_info):
+        # ECHA-CHEM C&L
+        clp_info[i]["CAS"] = CAS
+
+        # Check PPP ED list
+        if ED_PPP and ED_PPP.status_code == 200:
+            workbook = openpyxl.load_workbook(database_bytes)
+            sheet = workbook.worksheets[0]
+
             found = False
             for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row):
                 for cell in row:
                     val = str(cell.value).strip()
-                    if val == entry["Input"]:
-                        entry["ED PPP: Yes/No"] = "Yes"
-                        entry["ED PPP: Status"] = sheet[f"H{cell.row}"].value
-                        entry["ED PPP: Conclusion HH"] = sheet[f"I{cell.row}"].value
-                        entry["ED PPP: Conclusion non-TO"] = sheet[f"J{cell.row}"].value
-                        entry["ED PPP: EFSA conclusion link"] = sheet[f"N{cell.row}"].value
+                    if val != "-" and val in (clp_info[i]["CAS"], clp_info[i]["EC"],clp_info[i]["Input"]):
+                        clp_info[i]["ED PPP: Yes/No"] = "Yes"
+                        clp_info[i]["ED PPP: Status"] = sheet[f"H{cell.row}"].value
+                        clp_info[i]["ED PPP: Conclusion HH"] = sheet[f"I{cell.row}"].value
+                        clp_info[i]["ED PPP: Conclusion non-TO"] = sheet[f"J{cell.row}"].value
+                        clp_info[i]["ED PPP: EFSA conclusion link"] = sheet[f"N{cell.row}"].value
                         found = True
                         break
                 if found:
                     break
-            st.write(f"Processed {i+1}/{N_CAS}")
+            if not found:
+                clp_info[i]["ED PPP: Yes/No"] = "No"
+            logging.info(f"Processed {i+1}/{N_CAS}: {clp_info[i]["CAS"]}")
+            st.write(f"Processed {i+1}/{N_CAS}: {clp_info[i]["CAS"]}")
+
+        i += 1  # Update in the while loop
 
     df = pd.DataFrame(clp_info)
-    output = BytesIO()
-    df.to_excel(output, index=False, engine="openpyxl")
-    output.seek(0)
-    return output
+    output_excel = BytesIO()
+    df.to_excel(output_excel, index=False, engine="openpyxl")
+    output_excel.seek(0)
+
+    st.session_state.log_stream.seek(0)
+    log_bytes = BytesIO(st.session_state.log_stream.read().encode("utf-8"))
+
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zip_file:
+        zip_file.writestr("EDscreener_results.xlsx", output_excel.getvalue())
+        zip_file.writestr("EDscreener_log.txt", log_bytes.getvalue())
+        if database_bytes:
+            zip_file.writestr("databases/EFSA_PPP_ED_Database.xlsx", database_bytes.getvalue())
+    zip_buffer.seek(0)
+
+    return zip_buffer
 
 if uploaded_file:
     if st.button("Run Screener"):
         st.info("Processing started...")
-        result = process_data(uploaded_file)
-        if result:
-            st.download_button("Download Results", result, file_name="EDscreener_results.xlsx")
+        zip_result = process_data(uploaded_file)
+        if zip_result:
+            st.download_button("Download All Results (ZIP)", zip_result, file_name="EDscreener_package.zip")
             st.success("Processing finished!")
