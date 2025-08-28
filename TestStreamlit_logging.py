@@ -1,17 +1,25 @@
+
 import streamlit as st
 import pandas as pd
 import re
 import requests
 from bs4 import BeautifulSoup
-from io import BytesIO
+from io import BytesIO, StringIO
 import openpyxl
 from datetime import datetime
+import logging
+import zipfile
 
 st.title("ED Screener Tool")
 
 uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
 
+# In-memory log stream
+log_stream = StringIO()
+logging.basicConfig(stream=log_stream, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 def process_data(file):
+    logging.info("Started ED screener process")
     CASallpd = pd.read_excel(file, engine="openpyxl")
     if "CAS" not in CASallpd.columns:
         st.error("Error: 'CAS' column not found.")
@@ -22,25 +30,7 @@ def process_data(file):
     N_CAS = len(CASall)
 
     clp_info = [{"id": i+1, "Input": CASall[i]} for i in range(N_CAS)]
-    key_names = [
-        "Input", "CAS", "EC", "Name ECHA-CHEM", "ECHA-CHEM checked", "REACH tonnage band", "On C&L?", "Entries C&L",
-        "C&L URL", "C&L Type", "Joint Entries", "Classification - Hazard classes",
-        "Classification - Hazard statements", "Classification - Organs/ExposureRoute",
-        "Labeling - Hazard statements", "Labeling - Supplementary Hazard statements",
-        "Labeling - Organs/ExposureRoute", "Specific concentration limits", "M-factors", "C&L notes",
-        "ED PPP: Yes/No", "ED PPP: Status", "ED PPP: Conclusion HH", "ED PPP: Conclusion non-TO",
-        "ED PPP: EFSA conclusion link",
-        "BPR: Yes/No", "BPR: ED HH", "BPR: ED ENV",
-        "ED Assessment List: Yes/No", "ED Assessment List: Outcome",
-        "ED Assessment List: Status", "ED Assessment List: Authority", "ED Assessment List: Last updated",
-        "SVHC: Yes/No", "SVHC: Reason", "SVHC: Date Inclusion", "SVHC: Decision",
-        "Food additive: Yes/No", "Food additive: E number", "Food flavourings: Yes/No", "Food flavourings: FL",
-        "SVHC intent: Yes/No", "SVHC intent: Status", "SVHC intent: Scope", "SVHC intent: Last updated",
-        "PACT: Yes/No", "PACT: SEv", "PACT: SEv link", "PACT: DEv", "PACT: DEv link", "PACT: ED", "PACT: ED link",
-        "PACT: ARN", "PACT: ARN link", "PACT: PBT", "PACT: PBT link", "PACT: CLH", "PACT: CLH link", "PACT: SVHC",
-        "PACT: SVHC link",
-        "CoRAP: Yes/No", "CoRAP: Initial grounds of Concern", "CoRAP: Status", "CoRAP: Latest update"
-    ]
+    key_names = ["Input", "ED PPP: Yes/No", "ED PPP: Status", "ED PPP: Conclusion HH", "ED PPP: Conclusion non-TO", "ED PPP: EFSA conclusion link"]
     for entry in clp_info:
         for key in key_names:
             entry[key] = "-"
@@ -49,6 +39,7 @@ def process_data(file):
     PPP_ED_string = "overview-endocrine-disrupting-assessment-pesticide-active-substances"
     responseEFSA = requests.get(efsaPPP_url)
     ED_PPP = None
+    database_bytes = None
 
     if responseEFSA.status_code == 200:
         soupEFSA = BeautifulSoup(responseEFSA.text, "html.parser")
@@ -57,10 +48,12 @@ def process_data(file):
         if matching_links:
             file_url = requests.compat.urljoin(efsaPPP_url, matching_links[0])
             ED_PPP = requests.get(file_url)
+            if ED_PPP.status_code == 200:
+                database_bytes = BytesIO(ED_PPP.content)
+                logging.info("Downloaded EFSA PPP ED database")
 
     if ED_PPP and ED_PPP.status_code == 200:
-        excel_data = BytesIO(ED_PPP.content)
-        workbook = openpyxl.load_workbook(excel_data)
+        workbook = openpyxl.load_workbook(database_bytes)
         sheet = workbook.worksheets[0]
 
         for i, entry in enumerate(clp_info):
@@ -78,18 +71,31 @@ def process_data(file):
                         break
                 if found:
                     break
+            logging.info(f"Processed {i+1}/{N_CAS}")
             st.write(f"Processed {i+1}/{N_CAS}")
 
     df = pd.DataFrame(clp_info)
-    output = BytesIO()
-    df.to_excel(output, index=False, engine="openpyxl")
-    output.seek(0)
-    return output
+    output_excel = BytesIO()
+    df.to_excel(output_excel, index=False, engine="openpyxl")
+    output_excel.seek(0)
+
+    log_stream.seek(0)
+    log_bytes = BytesIO(log_stream.read().encode("utf-8"))
+
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as zip_file:
+        zip_file.writestr("EDscreener_results.xlsx", output_excel.getvalue())
+        zip_file.writestr("EDscreener_log.txt", log_bytes.getvalue())
+        if database_bytes:
+            zip_file.writestr("EFSA_PPP_ED_Database.xlsx", database_bytes.getvalue())
+    zip_buffer.seek(0)
+
+    return zip_buffer
 
 if uploaded_file:
     if st.button("Run Screener"):
         st.info("Processing started...")
-        result = process_data(uploaded_file)
-        if result:
-            st.download_button("Download Results", result, file_name="EDscreener_results.xlsx")
+        zip_result = process_data(uploaded_file)
+        if zip_result:
+            st.download_button("Download All Results (ZIP)", zip_result, file_name="EDscreener_package.zip")
             st.success("Processing finished!")
