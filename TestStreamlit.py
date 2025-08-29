@@ -6,10 +6,15 @@ import requests
 from bs4 import BeautifulSoup
 from io import BytesIO, StringIO
 import openpyxl
+from openpyxl import load_workbook
+from openpyxl.styles import Font
+from openpyxl.styles import Alignment
+from openpyxl.utils import get_column_letter
 import logging
 import zipfile
 import random
 import time
+from datetime import datetime
 
 st.title("ED Screener Tool")
 
@@ -550,12 +555,128 @@ def process_data(file):
     df.to_excel(output_excel, index=False, engine="openpyxl")
     output_excel.seek(0)
 
+
+    ### Add Summary sheet to Excel output ####
+    # Load workbook
+    wb = load_workbook(output_excel)
+
+    # Make the URLs clickable, Loop from the second row to the last row
+    ws = wb["Sheet1"]
+    columns = [11, 50, 52, 56, 60]  # C&L, PACT SEv, DEv, ARN, CLH
+    link_style = Font(color="0000FF", underline="single")
+    for row in range(2, ws.max_row + 1):
+        for col in columns:
+            cell = ws.cell(row=row, column=col)
+            cell.hyperlink = cell.value
+            cell.font = link_style
+
+    # Check if the "Summary" sheet exists; if not, create it
+    if "Summary" not in wb.sheetnames:
+        ws = wb.create_sheet(title="Summary")
+    else:
+        ws = wb["Summary"]
+
+    # Headers to be added in the "Summary" sheet
+    headers = [
+        ["", "", "", "", "", "Evaluated for ED in", "", "", "", "", "", "Also found in", "", ""],
+        ["Name (ECHA-CHEM)", "Input", "CAS number", "EC number", "Classification", "ED assessment",
+         "On BPR/PPPR list (for ED-HH; for ED-ENV)", "REACH SVHC candidate", "REACH SVHC intent",
+         "CORAP List", "PACT: DEv", "PACT: ARN", "Food lists", "Summary Harmonized", "Summary self-classified"]
+    ]
+    # Arrange headers and formatting
+    for row_index, row_data in enumerate(headers, start=1):
+        for col_index, cell_data in enumerate(row_data, start=1):
+            cell = ws.cell(row=row_index, column=col_index, value=cell_data)
+            # Make the font bold for the header cells
+            cell.font = Font(bold=True)
+    ws.merge_cells("F1:J1")
+
+    # Insert formulas for summary & Autofill down
+    last_row = wb["Sheet1"].max_row
+    for row in range(3, last_row + 2):
+        ws[f"A{row}"] = f"=Sheet1!B{row - 1}"  # Input
+        ws[f"B{row}"] = f"=Sheet1!F{row - 1}"  # Name
+        ws[f"C{row}"] = f"=Sheet1!D{row - 1}"  # CAS
+        ws[f"D{row}"] = f"=Sheet1!E{row - 1}"  # EC
+        ws[f"E{row}"] = f'=IF(Sheet1!N{row - 1}<>"",Sheet1!N{row - 1},"Not classified")'  # Classification
+        # ED assessment list
+        ws[
+            f"F{row}"] = f'=CONCATENATE(Sheet1!AE{row - 1},IF(OR(Sheet1!AE{row - 1}="No",Sheet1!AE{row - 1}=""),""," ("&Sheet1!AF{row - 1}&")"))'
+        # BPR/PPP ED?
+        ws[
+            f"G{row}"] = f'="BPR: "&IF(Sheet1!AB{row - 1}="Yes","Yes (HH: " &Sheet1!AC{row - 1}& "; ENV: " &Sheet1!AD{row - 1}& ")","No")&' \
+                         f'"; PPR: "&IF(Sheet1!W{row - 1}="Yes","Yes (HH: "&Sheet1!Y{row - 1} &"; ENV: " &Sheet1!Z{row - 1}& ")","No")'
+        # REACH SVHC candidate ED?
+        ws[f"H{row}"] = f'=IF(Sheet1!AJ{row - 1}="Yes","Yes: " & Sheet1!AK{row - 1},"No")'
+        # REACH SVHC intent ED?
+        ws[f"I{row}"] = f'=IF(Sheet1!AR{row - 1}="Yes","Yes: " & Sheet1!AS{row - 1},"No")'
+        # CORAP list ED?
+        ws[f"J{row}"] = f'=Sheet1!BK{row - 1}&" ("&Sheet1!BL{row - 1}&"; "&Sheet1!BM{row - 1}&")"'
+        # PACT: Dev
+        ws[f"K{row}"] = f'=Sheet1!AY{row - 1}'
+        # PACT: ARN
+        ws[f"L{row}"] = f'=Sheet1!BC{row - 1}'
+        # Food additives/flavourings
+        ws[
+            f"M{row}"] = f'=IF(OR(Sheet1!AN{row - 1}="Yes",Sheet1!AP{row - 1}="Yes"),"Yes (" & Sheet1!AO{row - 1} & "; " & Sheet1!AQ{row - 1} & ")", "No")'
+
+    # Determine classification interpretation before adding to Excel
+    # Function to determine classification summary
+    def determine_classification(value):
+        if pd.isna(value) or value.strip() == '':
+            return '-'
+        for outcome, codes in classification_mapping.items():
+            if any(code in value for code in codes):
+                return outcome
+        return 'other classification'
+
+    # Set up mapping for classification
+    classification_mapping = {
+        'reproductive toxicity': ['H360', 'H360F', 'H360FD', 'H360Fd', 'H360Df', 'H361', 'H361f', 'H361d', 'H361fd','H362'],
+        'STOT-RE': ['H372', 'H373'],
+        'carcinogenicity': ['H350', 'H350i', 'H351']
+    }
+
+    # Determine classification based on harmonized & self-classified column
+    df['Harmonized C&L assessment'] = df['Classification - Hazard statements'].apply(determine_classification)
+    df['Self-classified C&L assessment'] = df['Classification - Hazard statements'].apply(determine_classification)
+    # If C&L Type is NOT 'Harmonized C&L', set 'Harmonized' column to '-'
+    df.loc[df["C&L Type"] != "Harmonised C&L", "Harmonized C&L assessment"] = "-"
+    # If C&L Type IS 'Harmonized C&L', set 'Self-class' column to '-'
+    df.loc[df["C&L Type"] == "Harmonised C&L", "Self-classified C&L assessment"] = "-"
+
+    # Add to Excel summary sheet
+    for i, (val1, val2) in enumerate(zip(df['Harmonized C&L assessment'], df['Self-classified C&L assessment']),
+                                     start=3):
+        ws[f"N{i}"] = val1
+        ws[f"O{i}"] = val2
+
+    # Some formatting
+    # Set column width to 12 for columns A to AZ
+    for col in range(1, 106):  # 1 to 52 (A to BZ)
+        col_letter = get_column_letter(col)
+        # For sheet 1
+        cell = wb["Sheet1"].cell(row=1, column=col)
+        cell.alignment = Alignment(wrap_text=True)
+        wb["Sheet1"].column_dimensions[col_letter].width = 12
+        # For summary sheet
+        for rowN in (1, 2):
+            cell = ws.cell(row=rowN, column=col)
+            cell.alignment = Alignment(wrap_text=True)
+        ws.column_dimensions[col_letter].width = 15
+
+    # Save final workbook
+    final_output = BytesIO()
+    wb.save(final_output)
+    final_output.seek(0)
+
+    ### SAVING ####
+    # Save to zip file
     st.session_state.log_stream.seek(0)
     log_bytes = BytesIO(st.session_state.log_stream.read().encode("utf-8"))
-
     zip_buffer = BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as zip_file:
-        zip_file.writestr("EDscreener_results.xlsx", output_excel.getvalue())
+        zip_file.writestr("EDscreener_results.xlsx", final_output.getvalue())
         zip_file.writestr("EDscreener_log.txt", log_bytes.getvalue())
         if PPP_database_bytes:
             zip_file.writestr("databases/EFSA_PPP_ED_Database.xlsx", PPP_database_bytes.getvalue())
@@ -593,5 +714,5 @@ if uploaded_file:
         st.info("Processing started...")
         zip_result = process_data(uploaded_file)
         if zip_result:
-            st.download_button("Download All Results (ZIP)", zip_result, file_name="EDscreener_package.zip")
+            st.download_button("Download All Results (ZIP)", zip_result, file_name=f"EDscreener_package_{datetime.now().strftime("%Y-%m-%d %H-%M")}.zip")
             st.success("Processing finished!")
