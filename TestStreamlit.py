@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import re
@@ -15,8 +14,9 @@ import zipfile
 import random
 import time
 from datetime import datetime
-
-st.title("ED Screener Tool")
+import json
+import copy
+st.title("ARCHE screener")
 
 uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
 file_BPR_ED = st.file_uploader("Upload BPR ED file (xlsx)", type=["xlsx"])
@@ -31,18 +31,24 @@ if "log_stream" not in st.session_state:
 
 def process_data(file):
     logging.info("Started ED screener process")
+    # Load file with CAS (or other input strings)
     CASallpd = pd.read_excel(file, engine="openpyxl")
     if "CAS" not in CASallpd.columns:
         st.error("Error: 'CAS' column not found.")
         return None
-
     CASall = CASallpd["CAS"].dropna().tolist()
     CASall = [re.sub(r'[^\d\-]', '', str(cas)) for cas in CASall]
     N_CAS = len(CASall)
 
-    clp_info = [{"id": i+1, "Input": CASall[i]} for i in range(N_CAS)]
+    # Create dictionary to save screening output in
+    clp_info = [{"id": i + 1} for i in range(N_CAS)]  # Create list of dictionaries with length number of CAS numbers
+    now = datetime.now()
+    for i, entry in enumerate(clp_info):  # Add CAS and date to all entries
+        entry["Input"] = CASall[i]
+        entry["Date collected"] = now.strftime("%d/%m/%Y %H:%M:%S")
+    # List of names to add as keys
     key_names = [
-        "Input", "CAS", "EC", "Name ECHA-CHEM", "ECHA-CHEM checked", "REACH tonnage band", "On C&L?", "Entries C&L",
+        "CAS", "EC", "Name ECHA-CHEM", "ECHA-CHEM checked", "REACH tonnage band", "On C&L?", "Entries C&L",
         "C&L URL", "C&L Type", "Joint Entries", "Classification - Hazard classes",
         "Classification - Hazard statements", "Classification - Organs/ExposureRoute",
         "Labeling - Hazard statements", "Labeling - Supplementary Hazard statements",
@@ -189,7 +195,6 @@ def process_data(file):
             if ED_PPP.status_code == 200:
                 PPP_database_bytes = BytesIO(ED_PPP.content)
                 logging.info("Downloaded EFSA PPP ED database")
-
     # ED assessment list
     EDass_url = "https://echa.europa.eu/en/ed-assessment"
     EDass_database_bytes = None
@@ -277,31 +282,121 @@ def process_data(file):
         st.warning("Please upload an Excel file for food flavourings.")
     logging.info(f"Food flavourings list loaded successfully")
 
-    #### LOOP OVER ALL CAS NUMBERS ####
+    # C&L info from NextSDS API
+    data = [{"casNumber": cas, "ecNumber": ""} for cas in CASall]
+    url = "https://api.nextsds.com/echa"
+    headers = {
+        "accept": "application/json",
+        "Authorization": "Bearer b4077cae-b5b0-49a3-9c93-9925740adfe6",
+        "Content-Type": "application/json"
+    }
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        logging.info(f"API status: {response.status_code}")
+        if response.json()["output"]:
+            CnL_json = response.json()["output"]
+        else:
+            st.write(f"JSON issue: {response.json()["error"]}")
+    except Exception as e:
+        logging.error(f"Error parsing JSON: {e}")
+        st.write("Failed to parse response from API.")
+        st.write(f"JSON issue: {response.json()["error"]}")
+
+
+    #### LOOP OVER ALL CAS NUMBERS AND SCREEN SOURCES ####
+
+    # Load all Excel files for using later
+    workbook = openpyxl.load_workbook(PPP_database_bytes)
+    sheetPPP = workbook.worksheets[0]
+    workbookEDass = openpyxl.load_workbook(EDass_database_bytes)
+    first_sheetEDass = workbookEDass.worksheets[0]
+    workbookSVHC = openpyxl.load_workbook(SVHC_database_bytes)
+    first_sheetSVHC = workbookSVHC.worksheets[0]
+    workbookSVHC_intent = openpyxl.load_workbook(SVHCintent_database_bytes)
+    first_sheetSVHC_intent = workbookSVHC_intent.worksheets[0]
+    workbookPACT = openpyxl.load_workbook(PACT_database_bytes)
+    first_sheetPACT = workbookPACT.worksheets[0]
+    workbookCoRAP = openpyxl.load_workbook(CoRAP_database_bytes)
+    first_sheetCoRAP = workbookCoRAP.worksheets[0]
+
+    st.write(CnL_json)
     i = 0
     while i < len(clp_info):
-        CAS = CASall[i]
-        clp_info[i]["Input"] = CAS
         st.write(f"Checking chemical: {clp_info[i]["Input"]}")
 
-        # ECHA-CHEM C&L
-        clp_info[i]["CAS"] = CAS
+        #### ECHA-CHEM C&L from NEXTSDS-API ####
+        # Extract required info from response json
+        # Find the entries matching the input string in the json
+        matching_entries = [entryJSON for entryJSON in CnL_json if entryJSON.get("casNumber") == clp_info[i]["Input"]]
+        if len(matching_entries) > 1:   # If there are multiple hits for input string (eg multiple EC for CAS)
+            if clp_info[i]["ECHA-CHEM checked"] == "-": # If this is the first time the input string is checked
+                clp_info[i]["ECHA-CHEM checked"] = 0   # Indicate that this is the first of multiple hits
+                for n, entry in enumerate(matching_entries[1:], start=1):  # Skip the first match
+                    copied_entry = copy.deepcopy(clp_info[i])  # Deep copy the original entry
+                    copied_entry.update(entry)  # Merge with the new matching entry
+                    copied_entry["ECHA-CHEM checked"] = n
+                    clp_info.insert(i + n, copied_entry)  # Insert at position i+n
+            entry = matching_entries[clp_info[i]["ECHA-CHEM checked"]] # Use the corresponding entry in the json
+        else: entry = matching_entries[0]   # Standard, take the first entry if only one hit
+        if entry.get("found") == False:  # If the chemical was NOT found on C&L
+            clp_info[i]["On C&L?"] = "No"
+        else:  # If the chemical was found on C&L (then there is no "found" entry)
+            clp_info[i]["On C&L?"] = "Yes"
+            clp_info[i]["CAS"] = entry.get("cas")
+            clp_info[i]["EC"] = entry.get("ecNumber")
+            clp_info[i]["Name ECHA-CHEM"] = entry.get("name")
+            clp_info[i]["REACH tonnage band"] = entry.get("tonnageBand")
+            # If harmonised classification, give this
+            if entry.get("type") == "harmonised":
+                clp_info[i]["C&L Type"] = "Harmonised C&L"
+                clp_info[i]["C&L URL"] = "https://chem.echa.europa.eu/" + entry.get("rmlId") + "/harmonised"
+                clp_info[i]["Entries C&L"] = entry.get("totalIndustryClassifications")
+            else:  # Self-classification by industry
+                clp_info[i]["C&L Type"] = "Notified C&L"
+                clp_info[i]["C&L URL"] = "https://chem.echa.europa.eu/" + entry.get("rmlId") + "/self-classified"
+                clp_info[i]["Entries C&L"] = entry.get("totalIndustryClassifications")
+                clp_info[i]["Joint Entries"] = entry.get("industryClassification")[0]["dataSource"]
+            clp_info[i]["Classification - Hazard classes"] = entry.get("hazards")["hazardClasses"]
+            clp_info[i]["Classification - Hazard statements"] = entry.get("hazards")["statements"]
+            clp_info[i]["Classification - Organs/ExposureRoute"] = entry.get("hazards")["targetOrgsAndRoutes"]
+            clp_info[i]["Labeling - Hazard statements"] = entry.get("hazards")["statements"]
+            # clp_info[i]["Labeling - Supplementary Hazard statements"] = entry.get("labelling")["targetOrgsAndRoutes"]
+            # clp_info[i]["Labeling - Organs/ExposureRoute"] = entry.get("labelling")["targetOrgsAndRoutes"]
+            clp_info[i]["Specific concentration limits"] = entry.get("hazards")["scl"]
+            clp_info[i]["M-factors"] = entry.get("hazards")["mFactors"]
+            if entry.get("notes"):
+                print(entry.get("notes")[0])
+                clp_info[i]["C&L notes"] = entry.get("notes")[0]["note"]["noteCode"] + ": " + \
+                                           entry.get("notes")[0]["note"]["noteText"]
+        logging.info("Finished Next-SDS API")
 
         # Check PPP ED list
         if PPP_database_bytes:
-            workbook = openpyxl.load_workbook(PPP_database_bytes)
-            sheet = workbook.worksheets[0]
+            # cas_keys = [clp_info[i]["CAS"], clp_info[i]["EC"], clp_info[i]["Input"]]
+            # found_PPP_ED = False
+            # for key in cas_keys:
+            #     if key in ppp_cache:
+            #         row = ppp_cache[key]
+            #         clp_info[i]["ED PPP: Yes/No"] = "Yes"
+            #         clp_info[i]["ED PPP: Status"] = row.get("Status", "-")
+            #         clp_info[i]["ED PPP: Conclusion HH"] = row.get("(Preliminary) ED conclusion for humans", "-")
+            #         clp_info[i]["ED PPP: Conclusion non-TO"] = row.get("(Preliminary) ED conclusion  for non target organisms (NTOs)", "-")
+            #         clp_info[i]["ED PPP: EFSA conclusion link"] = row.get("Website EFSA CONCLUSION", "-")
+            #         found_PPP_ED = True
+            #         break
+            # if not found_PPP_ED:
+            #     clp_info[i]["ED PPP: Yes/No"] = "No"
 
             found_PPP_ED = False
-            for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row):
+            for row in sheetPPP.iter_rows(min_row=1, max_row=sheetPPP.max_row):
                 for cell in row:
                     val = str(cell.value).strip()
                     if val != "-" and val in (clp_info[i]["CAS"], clp_info[i]["EC"],clp_info[i]["Input"]):
                         clp_info[i]["ED PPP: Yes/No"] = "Yes"
-                        clp_info[i]["ED PPP: Status"] = sheet[f"H{cell.row}"].value
-                        clp_info[i]["ED PPP: Conclusion HH"] = sheet[f"I{cell.row}"].value
-                        clp_info[i]["ED PPP: Conclusion non-TO"] = sheet[f"J{cell.row}"].value
-                        clp_info[i]["ED PPP: EFSA conclusion link"] = sheet[f"N{cell.row}"].value
+                        clp_info[i]["ED PPP: Status"] = sheetPPP[f"H{cell.row}"].value
+                        clp_info[i]["ED PPP: Conclusion HH"] = sheetPPP[f"I{cell.row}"].value
+                        clp_info[i]["ED PPP: Conclusion non-TO"] = sheetPPP[f"J{cell.row}"].value
+                        clp_info[i]["ED PPP: EFSA conclusion link"] = sheetPPP[f"N{cell.row}"].value
                         found_PPP_ED = True
                         break
                 if found_PPP_ED:
@@ -313,9 +408,6 @@ def process_data(file):
 
         # Check ECHA ED Assessment list
         if EDass_database_bytes:
-            workbookEDass = openpyxl.load_workbook(EDass_database_bytes)
-            # Access the first sheet
-            first_sheetEDass = workbookEDass.worksheets[0]
             # Search for a specific string in the first sheet
             found_valueEDass = None
             for rowExcel_EDass in first_sheetEDass.iter_rows(min_row=1, max_row=first_sheetEDass.max_row, values_only=False):
@@ -342,9 +434,6 @@ def process_data(file):
 
         # Check SVHC list
         if SVHC_database_bytes:
-            workbookSVHC = openpyxl.load_workbook(SVHC_database_bytes)
-            # Access the first sheet
-            first_sheetSVHC = workbookSVHC.worksheets[0]
             # Search for a specific string in the first sheet
             found_valueSVHC = None
             for rowExcel_SVHC in first_sheetSVHC.iter_rows(min_row=1, max_row=first_sheetSVHC.max_row, values_only=False):
@@ -369,9 +458,6 @@ def process_data(file):
 
         # Check SVHC intent list
         if SVHCintent_database_bytes:
-            workbookSVHC_intent = openpyxl.load_workbook(SVHCintent_database_bytes)
-            # Access the first sheet
-            first_sheetSVHC_intent = workbookSVHC_intent.worksheets[0]
             # Search for a specific string in the first sheet
             found_valueSVHC_intent = None
             for rowExcel_SVHC_intent in first_sheetSVHC_intent.iter_rows(min_row=1, max_row=first_sheetSVHC_intent.max_row, values_only=False):
@@ -397,9 +483,6 @@ def process_data(file):
 
         # Check PACT list
         if PACT_database_bytes:
-            workbookPACT = openpyxl.load_workbook(PACT_database_bytes)
-            # Access the first sheet
-            first_sheetPACT = workbookPACT.worksheets[0]
             # Search for a specific string in the first sheet
             found_valuePACT = None
             for rowExcel_PACT in first_sheetPACT.iter_rows(min_row=1, max_row=first_sheetPACT.max_row, values_only=False):
@@ -448,9 +531,6 @@ def process_data(file):
 
         # Check CoRAP
         if CoRAP_database_bytes:
-            workbookCoRAP = openpyxl.load_workbook(CoRAP_database_bytes)
-            # Access the first sheet
-            first_sheetCoRAP = workbookCoRAP.worksheets[0]
             # Search for a specific string in the first sheet
             found_valueCoRAP = None
             for rowExcel_CoRAP in first_sheetCoRAP.iter_rows(min_row=1, max_row=first_sheetCoRAP.max_row, values_only=False):
@@ -545,8 +625,8 @@ def process_data(file):
             logging.info("No Food flavourings database")
 
         # Finalize the loop per chemical
-        logging.info(f"Processed {i+1}/{N_CAS}: {clp_info[i]["CAS"]}")
-        st.write(f"Processed {i+1}/{N_CAS}: {clp_info[i]["CAS"]}")
+        logging.info(f"Processed {i+1}/{len(clp_info)}: {clp_info[i]["CAS"]}")
+        st.write(f"Processed {i+1}/{len(clp_info)}: {clp_info[i]["CAS"]}")
 
         i += 1  # Update in the while loop
 
@@ -705,6 +785,10 @@ def process_data(file):
             workbook_food_flav.save(excel_buffer)
             excel_buffer.seek(0)  # Reset buffer position to the beginning
             zip_file.writestr(f"databases/{file_food_flav.name}", excel_buffer.getvalue())
+        json_data = json.dumps(response.json()["output"], indent=2)
+        json_bytes = json_data.encode('utf-8')
+        if json_bytes:
+            zip_file.writestr(f"databases/API json {datetime.now().strftime('%Y-%m-%d %H-%M')}.json", json_bytes)
     zip_buffer.seek(0)
 
     return zip_buffer
