@@ -775,7 +775,7 @@ def process_data(file):
     classification_mapping = {
         'reproductive toxicity': ['H360', 'H360F', 'H360FD', 'H360Fd', 'H360Df', 'H361', 'H361f', 'H361d', 'H361fd','H362'],
         'STOT-RE': ['H372', 'H373'],
-        'carcinogenicity': ['H350', 'H350i', 'H351']
+        'carcinogenicity': ['H350', 'H350i', 'H351'],
         'endocrine disruption':['EUH380', 'EUH381', 'EUH430', 'EUH431']
     }
 
