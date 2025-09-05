@@ -765,16 +765,18 @@ def process_data(file):
     def determine_classification(value):
         if pd.isna(value) or value.strip() == '':
             return '-'
+        matched_classifications = []
         for outcome, codes in classification_mapping.items():
             if any(code in value for code in codes):
-                return outcome
-        return 'other classification'
+                matched_classifications.append(outcome)
+        return ', '.join(matched_classifications) if matched_classifications else 'other classification'
 
     # Set up mapping for classification
     classification_mapping = {
         'reproductive toxicity': ['H360', 'H360F', 'H360FD', 'H360Fd', 'H360Df', 'H361', 'H361f', 'H361d', 'H361fd','H362'],
         'STOT-RE': ['H372', 'H373'],
         'carcinogenicity': ['H350', 'H350i', 'H351']
+        'endocrine disruption':['EUH380', 'EUH381', 'EUH430', 'EUH431']
     }
 
     # Determine classification based on harmonized & self-classified column
