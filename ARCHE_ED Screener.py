@@ -373,7 +373,7 @@ def process_data(file):
         st.error(f"❌ Failed to load one of the Excel files: {e}")
         st.stop()
 
-    st.write(CnL_json)
+    # st.write(CnL_json)
     i = 0
     while i < len(clp_info):
         st.write(f"Checking chemical: {clp_info[i]["Input"]}")
@@ -447,21 +447,6 @@ def process_data(file):
 
         # Check PPP ED list
         if PPP_database_bytes:
-            # cas_keys = [clp_info[i]["CAS"], clp_info[i]["EC"], clp_info[i]["Input"]]
-            # found_PPP_ED = False
-            # for key in cas_keys:
-            #     if key in ppp_cache:
-            #         row = ppp_cache[key]
-            #         clp_info[i]["ED PPP: Yes/No"] = "Yes"
-            #         clp_info[i]["ED PPP: Status"] = row.get("Status", "-")
-            #         clp_info[i]["ED PPP: Conclusion HH"] = row.get("(Preliminary) ED conclusion for humans", "-")
-            #         clp_info[i]["ED PPP: Conclusion non-TO"] = row.get("(Preliminary) ED conclusion  for non target organisms (NTOs)", "-")
-            #         clp_info[i]["ED PPP: EFSA conclusion link"] = row.get("Website EFSA CONCLUSION", "-")
-            #         found_PPP_ED = True
-            #         break
-            # if not found_PPP_ED:
-            #     clp_info[i]["ED PPP: Yes/No"] = "No"
-
             found_PPP_ED = False
             for row in sheetPPP.iter_rows(min_row=1, max_row=sheetPPP.max_row):
                 for cell in row:
