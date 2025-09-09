@@ -17,11 +17,32 @@ from datetime import datetime
 import json
 import copy
 st.title("ARCHE screener")
+st.header("ARCHE screener")
 
-uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
-file_BPR_ED = st.file_uploader("Upload BPR ED file (xlsx)", type=["xlsx"])
-file_food_add = st.file_uploader("Upload Food additives Excel (xlsx)", type=["xlsx"])
-file_food_flav = st.file_uploader("Upload Food flavourings Excel (xlsx)", type=["xlsx"])
+st.markdown(
+    """
+    This app can be used to screen a list of CAS/EC numbers uploaded by the user.  
+    It provides the **C&L classification** from the ECHA-CHEM website and the **ED information** from a number of sources.  
+
+    **The following sources are automatically accessed from the ECHA website:**
+    - ED list from PPP  
+    - ED assessment list  
+    - SVHC and SVHC intent  
+    - CoRAP  
+    - PACT  
+
+    **The following sources need to be uploaded by the user:**
+    - ED list from BPR  
+    - Food additives list  
+    - Food flavourings listings  
+    """
+)
+
+
+uploaded_file = st.file_uploader("Upload Excel file to screen: A column with name CAS containing all CAS/EC numbers to screen in individual rows below should be on the first sheet.", type=["xlsx"])
+file_BPR_ED = st.file_uploader("Upload BPR ED file (xlsx): Upload the ED list from BPR (xlsx)", type=["xlsx"])
+file_food_add = st.file_uploader("Upload Food additives list (xlsx)", type=["xlsx"])
+file_food_flav = st.file_uploader("Upload Food flavourings list (xlsx)", type=["xlsx"])
 
 # In-memory log stream
 if "log_stream" not in st.session_state:
@@ -33,11 +54,8 @@ def process_data(file):
     logging.info("Started ED screener process")
     # Load file with CAS (or other input strings)
     CASallpd = pd.read_excel(file, engine="openpyxl")
-    if "CAS" not in CASallpd.columns:
-        st.error("Error: 'CAS' column not found.")
-        return None
     # Clean and deduplicate CAS values
-    CASall = CASallpd["CAS"].dropna().tolist()
+    CASall = CASallpd[selected_col].dropna().tolist()   # selected_col is chosen in the app
     CASall = [re.sub(r'[^\d\-]', '', str(cas)) for cas in CASall]
     CASall = list(set(CASall))  # Keep only unique values
     N_CAS = len(CASall)
@@ -690,7 +708,12 @@ def process_data(file):
 
         i += 1  # Update in the while loop
 
+    # Make panda dataframe for saving to Excel
     df = pd.DataFrame(clp_info)
+    # Reorder to the original list order
+    df[selected_col] = pd.Categorical(df[selected_col], categories=CASall, ordered=True)
+    df = df.sort_values(by=selected_col).reset_index(drop=True)
+
     output_excel = BytesIO()
     df.to_excel(output_excel, index=False, engine="openpyxl")
     output_excel.seek(0)
@@ -856,6 +879,14 @@ def process_data(file):
     return zip_buffer
 
 if uploaded_file:
+    df_preview = pd.read_excel(uploaded_file, engine="openpyxl")
+    st.write("### Preview of uploaded file")
+    # Dropdown for column selection
+    selected_col = st.selectbox(
+        "Select the column containing CAS/EC numbers:",
+        df_preview.columns
+    )
+
     if st.button("Run Screener"):
         st.info("Processing started...")
         zip_result = process_data(uploaded_file)
