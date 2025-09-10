@@ -57,6 +57,7 @@ def process_data(file):
     # Clean and deduplicate CAS values
     CASall = CASallpd[selected_col].dropna().tolist()   # selected_col is chosen in the app
     CASall = [re.sub(r'[^\d\-]', '', str(cas)) for cas in CASall]
+    order = CASall  # Save the order for reordering later on
     CASall = list(set(CASall))  # Keep only unique values
     N_CAS = len(CASall)
 
@@ -325,7 +326,7 @@ def process_data(file):
     for idx, cas_chunk in enumerate(chunk_list(CASall, 250)):
         data = {
             "taskId": "echa-api",
-            "payload": [{"casNumber": cas, "ecNumber": ""} for cas in cas_chunk]
+            "payload": cas_chunk
         }
         try:
             response = requests.post(start_url, headers=headers, json=data)
@@ -399,7 +400,7 @@ def process_data(file):
         #### ECHA-CHEM C&L from NEXTSDS-API ####
         # Find the entries matching the input string in the json
         matching_entries = [entryJSON for entryJSON in CnL_json if
-                            entryJSON.get("casNumber") == clp_info[i]["Input"]]
+                            entryJSON.get("casNumber") == clp_info[i]["Input"] or entryJSON.get("identifier") == clp_info[i]["Input"]]
         if len(matching_entries) > 1:  # If there are multiple hits for input string (eg multiple EC for CAS)
             if clp_info[i]["ECHA-CHEM checked"] == "-":  # If this is the first time the input string is checked
                 clp_info[i]["ECHA-CHEM checked"] = 0  # Indicate that this is the first of multiple hits
@@ -414,6 +415,9 @@ def process_data(file):
         # Extract required info from response json
         if entry.get("found") == False:  # If the chemical was NOT found on C&L
             clp_info[i]["On C&L?"] = "No"
+            # Add "not found" explicity for a few columns (easier for further use of output)
+            for classname in ["Classification - Hazard classes","Classification - Hazard statements","Labeling - Hazard statements"]:
+                clp_info[i][classname] = "Not found on C&L"
         else:  # If the chemical was found on C&L (then there is no "found" entry)
             clp_info[i]["On C&L?"] = "Yes"
             clp_info[i]["CAS"] = entry.get("cas")
@@ -711,8 +715,8 @@ def process_data(file):
     # Make panda dataframe for saving to Excel
     df = pd.DataFrame(clp_info)
     # Reorder to the original list order
-    df[selected_col] = pd.Categorical(df[selected_col], categories=CASall, ordered=True)
-    df = df.sort_values(by=selected_col).reset_index(drop=True)
+    df["Input"] = pd.Categorical(df["Input"], categories=order, ordered=True)
+    df = df.sort_values(by="Input").reset_index(drop=True)
 
     output_excel = BytesIO()
     df.to_excel(output_excel, index=False, engine="openpyxl")
