@@ -413,7 +413,7 @@ def process_data(file):
         else:
             entry = matching_entries[0]  # Standard, take the first entry if only one hit
         # Extract required info from response json
-        if entry.get("found") == False:  # If the chemical was NOT found on C&L
+        if entry.get("found") == False or len(entry.get("industryClassification"))>0:  # If the chemical was NOT found on C&L or if there are no industry classifications
             clp_info[i]["On C&L?"] = "No"
             # Add "not found" explicity for a few columns (easier for further use of output)
             for classname in ["Classification - Hazard classes","Classification - Hazard statements","Labeling - Hazard statements"]:
