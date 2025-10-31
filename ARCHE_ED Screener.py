@@ -23,6 +23,7 @@ st.markdown(
     """
     This app can be used to screen a list of CAS/EC numbers uploaded by the user.  
     It provides the **C&L classification** from the ECHA-CHEM website and the **ED information** from a number of sources.  
+    Necessary databases and login credentials can be found on Dropbox: Science/Data searches/ED screener/input databases.
 
     **The following sources are automatically accessed from the ECHA website:**
     - ED list from PPP  
@@ -40,6 +41,7 @@ st.markdown(
 
 
 uploaded_file = st.file_uploader("Upload Excel file to screen: A column with name CAS containing all CAS/EC numbers to screen in individual rows below should be on the first sheet.", type=["xlsx"])
+api_file = st.file_uploader("Upload API key NextSDS (NextSDS API key.txt)", type=["txt"])
 file_BPR_ED = st.file_uploader("Upload BPR ED file (xlsx): Upload the ED list from BPR (xlsx)", type=["xlsx"])
 file_food_add = st.file_uploader("Upload Food additives list (xlsx)", type=["xlsx"])
 file_food_flav = st.file_uploader("Upload Food flavourings list (xlsx)", type=["xlsx"])
@@ -305,6 +307,10 @@ def process_data(file):
     logging.info(f"Food flavourings list loaded successfully")
 
     # C&L info from NextSDS API (Using JOBS)
+    # Load API key
+    if api_file is not None:
+        api_key = api_file.read().decode("utf-8").strip()
+
     def chunk_list(lst, chunk_size):
         for i in range(0, len(lst), chunk_size):
             yield lst[i:i + chunk_size]
@@ -312,7 +318,6 @@ def process_data(file):
     logging.info("Starting nextSDS API")
     st.write("Checking ECHA-CHEM API")
 
-    api_key = "b4077cae-b5b0-49a3-9c93-9925740adfe6"
     start_url = "https://api.nextsds.com/jobs/start"
     status_url = "https://api.nextsds.com/jobs/retrieve"
     headers = {
@@ -895,8 +900,8 @@ if uploaded_file:
         st.info("Processing started...")
         zip_result = process_data(uploaded_file)
         if zip_result:
-            st.download_button("Download All Results (ZIP)", zip_result, file_name=f"EDscreener_package_{datetime.now().strftime("%Y-%m-%d %H-%M")}.zip")
             st.success("Processing finished!")
+            st.download_button("Download All Results (ZIP)", zip_result, file_name=f"EDscreener_package_{datetime.now().strftime('%Y-%m-%d %H-%M')}.zip")
 
         else:
             # If processing failed, offer log download
