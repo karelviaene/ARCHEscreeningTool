@@ -57,7 +57,7 @@ def process_data(file):
     # Clean and deduplicate CAS values
     CASall = CASallpd[selected_col].dropna().tolist()   # selected_col is chosen in the app
     CASall = [re.sub(r'[^\d\-]', '', str(cas)) for cas in CASall]
-    order = CASall  # Save the order for reordering later on
+    order = pd.unique(CASall)  # Save the order for reordering later on (needs to be unique values)
     CASall = list(set(CASall))  # Keep only unique values
     N_CAS = len(CASall)
 
