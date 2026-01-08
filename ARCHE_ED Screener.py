@@ -39,6 +39,8 @@ st.markdown(
     """
 )
 
+# To run locally
+# streamlit run "/Users/arche/Documents/Python/ARCHEscreeningTool/ARCHE_ED Screener.py"
 
 uploaded_file = st.file_uploader("Upload Excel file to screen: A column with name CAS containing all CAS/EC numbers to screen in individual rows below should be on the first sheet.", type=["xlsx"])
 api_file = st.file_uploader("Upload API key NextSDS (NextSDS API key.txt)", type=["txt"])
