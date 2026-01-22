@@ -54,22 +54,117 @@ if "log_stream" not in st.session_state:
     logging.basicConfig(stream=st.session_state.log_stream, level=logging.INFO,
                         format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Normalize IDs (only valid characters)
+def normalize_id(value: str) -> str:
+    if value is None:
+        return ""
+    s = str(value).strip()
+    # Replace various dash characters with ASCII hyphen-minus
+    s = (s.replace('\u2010', '-')  # hyphen
+           .replace('\u2011', '-')  # non-breaking hyphen
+           .replace('\u2012', '-')  # figure dash
+           .replace('\u2013', '-')  # en dash
+           .replace('\u2014', '-')  # em dash
+           .replace('\u2212', '-')  # minus sign
+        )
+    # Keep only digits and hyphens
+    s = re.sub(r"[^\d\-]", "", s)
+    # Collapse multiple hyphens (defensive)
+    s = re.sub(r"-{2,}", "-", s)
+    return s
+
+# -------- CAS validation --------
+def valid_cas_format(cas: str) -> bool:
+    """CAS format: X…X-XX-X where first block has 2–7 digits."""
+    return re.fullmatch(r"\d{2,7}-\d{2}-\d", cas) is not None
+
+def valid_cas_checksum(cas: str) -> bool:
+    """
+    Validates the CAS check digit.
+    Check digit Z = sum(digit * position) % 10 over the concatenation of the first two blocks,
+    counting positions from rightmost starting at 1.
+    """
+    try:
+        parts = cas.split('-')
+        if len(parts) != 3:
+            return False
+        body = parts[0] + parts[1]
+        check = int(parts[2])
+        total = sum(int(d) * i for i, d in enumerate(reversed(body), start=1))
+        return (total % 10) == check
+    except Exception:
+        return False
+
+def is_valid_cas(cas: str) -> bool:
+    return valid_cas_format(cas) and valid_cas_checksum(cas)
+
+# -------- EC validation --------
+def is_valid_ec(ec: str) -> bool:
+    """
+    Validates EC number structural format: XXX-XXX-X (digits only).
+    """
+    return re.fullmatch(r"\d{3}-\d{3}-\d", ec) is not None
+
 def process_data(file):
     logging.info("Started ED screener process")
     # Load file with CAS (or other input strings)
     CASallpd = pd.read_excel(file, engine="openpyxl")
-    # Clean and deduplicate CAS values
-    CASall = CASallpd[selected_col].dropna().tolist()   # selected_col is chosen in the app
-    CASall = [re.sub(r'[^\d\-]', '', str(cas)) for cas in CASall]
-    order = pd.unique(CASall)  # Save the order for reordering later on (needs to be unique values)
-    CASall = list(set(CASall))  # Keep only unique values
-    N_CAS = len(CASall)
+
+    # Extract raw values (drop NaNs) preserving original order
+    raw_values = CASallpd[selected_col].dropna().tolist()
+
+    chem_ids = []   # combined valid identifiers (CAS + EC), unique in original order
+    valid_cas = []
+    valid_ec = []
+    invalid_ids = []
+    seen = set()
+    order = []  # Save the order for reordering later on (needs to be unique values)
+
+    for raw in raw_values:
+        norm = normalize_id(raw)
+        if not norm:
+            continue  # skip truly empty after normalization
+        if norm in seen:
+            continue  # keep original order, skip duplicates
+
+        order.append(norm)
+        if is_valid_cas(norm):
+            chem_ids.append(norm)
+            valid_cas.append(norm)
+            seen.add(norm)
+        elif is_valid_ec(norm):
+            chem_ids.append(norm)
+            valid_ec.append(norm)
+            seen.add(norm)
+        else:
+            invalid_ids.append(norm)
+    N_IDs = len(chem_ids)
+    logging.info(f"Total input rows (non-NaN): {len(raw_values)}")
+    logging.info(f"Valid CAS: {len(valid_cas)} | Valid EC: {len(valid_ec)} | Invalid: {len(invalid_ids)}")
+    logging.info(f"Unique valid identifiers kept (order preserved): {len(chem_ids)}")
+    st.write(f'The following ID numbers were invalid and therefore not screened: {invalid_ids}')
+
+    # CASall = CASallpd[selected_col].dropna().tolist()   # selected_col is chosen in the app
+    # CASall = [re.sub(r'[^\d\-]', '', str(cas)) for cas in CASall]   # regexp to remove all non-digits and non-hyphen
+    # order = pd.unique(CASall)  # Save the order for reordering later on (needs to be unique values)
+    # CASall = list(set(CASall))  # Keep only unique values
+    #
+    # # Only work with valid CAS numbers
+    # invalid_cas_list = []  # store faulty CAS numbers
+    # valid_CAS = []  # store validated CAS numbers
+    # for cas in CASall:
+    #     if valid_cas_format(cas) and valid_cas_checksum(cas):
+    #         valid_CAS.append(cas)
+    #     else:
+    #         invalid_cas_list.append(cas)
+    # N_CAS = len(valid_CAS)
+    # st.write(f'The following CAS numbers were invalid and therefore not screened: {invalid_cas_list}')
 
     # Create dictionary to save screening output in
-    clp_info = [{"id": i + 1} for i in range(N_CAS)]  # Create list of dictionaries with length number of CAS numbers
+    clp_info = [{"id": i + 1} for i in range(N_IDs)]  # Create list of dictionaries with length number of valid CAS numbers
     now = datetime.now()
     for i, entry in enumerate(clp_info):  # Add CAS and date to all entries
-        entry["Input"] = CASall[i]
+        entry["Input"] = chem_ids[i]
         entry["Date collected"] = now.strftime("%d/%m/%Y %H:%M:%S")
     # List of names to add as keys
     key_names = [
@@ -204,7 +299,8 @@ def process_data(file):
 
     #### LOAD DATA SOURCES ####
     logging.info("Loading databases")
-    st.write("Loading databases")
+    st.info("Loading databases")
+
     # PPP ED
     efsaPPP_url = "https://www.efsa.europa.eu/en/applications/pesticides"
     PPP_ED_string = "overview-endocrine-disrupting-assessment-pesticide-active-substances"
@@ -318,7 +414,7 @@ def process_data(file):
             yield lst[i:i + chunk_size]
 
     logging.info("Starting nextSDS API")
-    st.write("Checking ECHA-CHEM API")
+    st.info("Checking ECHA-CHEM API")
 
     start_url = "https://api.nextsds.com/jobs/start"
     status_url = "https://api.nextsds.com/jobs/retrieve"
@@ -330,7 +426,7 @@ def process_data(file):
 
     # Step 1: Submit all jobs
     jobs = []
-    for idx, cas_chunk in enumerate(chunk_list(CASall, 250)):
+    for idx, cas_chunk in enumerate(chunk_list(chem_ids, 100)):
         data = {
             "taskId": "echa-api",
             "payload": cas_chunk
@@ -351,7 +447,7 @@ def process_data(file):
 
     # Step 2: Monitor all jobs in one loop
     while not all(job["done"] for job in jobs):
-        time.sleep(10)
+        time.sleep(5)
         for job in jobs:
             if job["done"]:
                 continue
@@ -361,7 +457,7 @@ def process_data(file):
                     status_data = status_response.json()
                     job_status = status_data.get("status")
                     st.write(f"Chunk {job['index']}: Job status: {job_status}")
-                    if job_status not in ["STARTED", "EXECUTING"]:
+                    if job_status not in ["STARTED", "EXECUTING","DEQUEUED"]:
                         job["done"] = True
                         job["output"] = status_data.get("output", [])
                 elif status_response.status_code in [400, 404]:
@@ -420,59 +516,62 @@ def process_data(file):
         else:
             entry = matching_entries[0]  # Standard, take the first entry if only one hit
         # Extract required info from response json
-        if entry.get("found") == False or len(entry.get("industryClassification"))==0:  # If the chemical was NOT found on C&L or if there are no industry classifications
-            clp_info[i]["On C&L?"] = "No"
-            # Add "not found" explicity for a few columns (easier for further use of output)
-            for classname in ["Classification - Hazard classes","Classification - Hazard statements","Labeling - Hazard statements"]:
-                clp_info[i][classname] = "Not found on C&L"
-        else:  # If the chemical was found on C&L (then there is no "found" entry)
-            clp_info[i]["On C&L?"] = "Yes"
-            clp_info[i]["CAS"] = entry.get("cas")
-            clp_info[i]["EC"] = entry.get("ecNumber")
-            clp_info[i]["Name ECHA-CHEM"] = entry.get("name")
-            clp_info[i]["REACH tonnage band"] = entry.get("tonnageBand")
-            # If harmonised classification, give this
-            if entry.get("type") == "harmonised":
-                clp_info[i]["C&L Type"] = "Harmonised C&L"
-                clp_info[i]["C&L URL"] = "https://chem.echa.europa.eu/" + entry.get("rmlId") + "/harmonised"
-                clp_info[i]["Entries C&L"] = entry.get("totalIndustryClassifications")
-            else:  # Self-classification by industry
-                clp_info[i]["C&L Type"] = "Notified C&L"
-                clp_info[i]["C&L URL"] = "https://chem.echa.europa.eu/" + entry.get("rmlId") + "/self-classified"
-                clp_info[i]["Entries C&L"] = entry.get("totalIndustryClassifications")
-                clp_info[i]["Joint Entries"] = entry.get("industryClassification")[0]["dataSource"]
-            clp_info[i]["Classification - Hazard classes"] = entry.get("hazards")["hazardClasses"]
-            clp_info[i]["Classification - Hazard statements"] = entry.get("hazards")["statements"]
-            clp_info[i]["Classification - Organs/ExposureRoute"] = entry.get("hazards")["targetOrgsAndRoutes"]
-            # Labelling
-            labelling = entry.get("labelling", [])
-            hazard_codes = [
-                item["hazardStatement"]["hazardStatementCode"]
-                for item in labelling
-                if "hazardStatement" in item and "hazardStatementCode" in item["hazardStatement"]
-            ]
-            clp_info[i]["Labeling - Hazard statements"] = ", ".join(hazard_codes)
-            # clp_info[i]["Labeling - Hazard statements"] = entry.get("hazards")["statements"]
-            # clp_info[i]["Labeling - Supplementary Hazard statements"] = entry.get("labelling")["targetOrgsAndRoutes"]
-            # clp_info[i]["Labeling - Organs/ExposureRoute"] = entry.get("labelling")["targetOrgsAndRoutes"]
-            clp_info[i]["Specific concentration limits"] = entry.get("hazards")["scl"]
-            mfactor = entry.get("mFactor", {})
-            if mfactor:
-                items = mfactor.get("items", [])
-                if isinstance(items, list) and items:
-                    mfactor_strings = []
-                    for item in items:
-                        acute = item.get("mfactorAcute", "-")
-                        chronic = item.get("mfactorChronic", "-")
-                        mfactor_strings.append(f"Acute: {acute}; Chronic: {chronic}")
-                    clp_info[i]["M-factors"] = " | ".join(mfactor_strings)
-                elif isinstance(mfactor, dict):
-                    clp_info[i]["M-factors"] = "Acute: " + str(mfactor.get("mfactorAcute", "-")) + \
-                                               "; Chronic: " + str(mfactor.get("mfactorChronic", "-"))
-            if entry.get("notes"):
-                clp_info[i]["C&L notes"] = entry.get("notes")[0]["note"]["noteCode"] + ": " + \
-                                           entry.get("notes")[0]["note"]["noteText"]
-        logging.info("Finished Next-SDS API")
+        try:
+            if entry.get("found") == False or len(entry.get("industryClassification"))==0:  # If the chemical was NOT found on C&L or if there are no industry classifications
+                clp_info[i]["On C&L?"] = "No"
+                # Add "not found" explicity for a few columns (easier for further use of output)
+                for classname in ["Classification - Hazard classes","Classification - Hazard statements","Labeling - Hazard statements"]:
+                    clp_info[i][classname] = "Not found on C&L"
+            else:  # If the chemical was found on C&L (then there is no "found" entry)
+                clp_info[i]["On C&L?"] = "Yes"
+                clp_info[i]["CAS"] = entry.get("cas")
+                clp_info[i]["EC"] = entry.get("ecNumber")
+                clp_info[i]["Name ECHA-CHEM"] = entry.get("name")
+                clp_info[i]["REACH tonnage band"] = entry.get("tonnageBand")
+                # If harmonised classification, give this
+                if entry.get("type") == "harmonised":
+                    clp_info[i]["C&L Type"] = "Harmonised C&L"
+                    clp_info[i]["C&L URL"] = "https://chem.echa.europa.eu/" + entry.get("rmlId") + "/harmonised"
+                    clp_info[i]["Entries C&L"] = entry.get("totalIndustryClassifications")
+                else:  # Self-classification by industry
+                    clp_info[i]["C&L Type"] = "Notified C&L"
+                    clp_info[i]["C&L URL"] = "https://chem.echa.europa.eu/" + entry.get("rmlId") + "/self-classified"
+                    clp_info[i]["Entries C&L"] = entry.get("totalIndustryClassifications")
+                    clp_info[i]["Joint Entries"] = entry.get("industryClassification")[0]["dataSource"]
+                clp_info[i]["Classification - Hazard classes"] = entry.get("hazards")["hazardClasses"]
+                clp_info[i]["Classification - Hazard statements"] = entry.get("hazards")["statements"]
+                clp_info[i]["Classification - Organs/ExposureRoute"] = entry.get("hazards")["targetOrgsAndRoutes"]
+                # Labelling
+                labelling = entry.get("labelling", [])
+                hazard_codes = [
+                    item["hazardStatement"]["hazardStatementCode"]
+                    for item in labelling
+                    if "hazardStatement" in item and "hazardStatementCode" in item["hazardStatement"]
+                ]
+                clp_info[i]["Labeling - Hazard statements"] = ", ".join(hazard_codes)
+                # clp_info[i]["Labeling - Hazard statements"] = entry.get("hazards")["statements"]
+                # clp_info[i]["Labeling - Supplementary Hazard statements"] = entry.get("labelling")["targetOrgsAndRoutes"]
+                # clp_info[i]["Labeling - Organs/ExposureRoute"] = entry.get("labelling")["targetOrgsAndRoutes"]
+                clp_info[i]["Specific concentration limits"] = entry.get("hazards")["scl"]
+                mfactor = entry.get("mFactor", {})
+                if mfactor:
+                    items = mfactor.get("items", [])
+                    if isinstance(items, list) and items:
+                        mfactor_strings = []
+                        for item in items:
+                            acute = item.get("mfactorAcute", "-")
+                            chronic = item.get("mfactorChronic", "-")
+                            mfactor_strings.append(f"Acute: {acute}; Chronic: {chronic}")
+                        clp_info[i]["M-factors"] = " | ".join(mfactor_strings)
+                    elif isinstance(mfactor, dict):
+                        clp_info[i]["M-factors"] = "Acute: " + str(mfactor.get("mfactorAcute", "-")) + \
+                                                   "; Chronic: " + str(mfactor.get("mfactorChronic", "-"))
+                if entry.get("notes"):
+                    clp_info[i]["C&L notes"] = entry.get("notes")[0]["note"]["noteCode"] + ": " + \
+                                               entry.get("notes")[0]["note"]["noteText"]
+            logging.info("Finished Next-SDS API")
+        except:
+            st.write(matching_entries)
 
         # Check PPP ED list
         if PPP_database_bytes:
