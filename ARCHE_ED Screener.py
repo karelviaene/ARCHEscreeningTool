@@ -505,6 +505,9 @@ def process_data(file):
     try:
         workbookPACT = openpyxl.load_workbook(PACT_database_bytes)
         first_sheetPACT = workbookPACT.worksheets[0]
+    except Exception as e:
+        st.error(f"❌ Failed to load one of the Excel files: {e}")
+        st.stop()
     try:
         workbookCoRAP = openpyxl.load_workbook(CoRAP_database_bytes)
         first_sheetCoRAP = workbookCoRAP.worksheets[0]
