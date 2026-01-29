@@ -481,14 +481,31 @@ def process_data(file):
     try:
         workbook = openpyxl.load_workbook(PPP_database_bytes)
         sheetPPP = workbook.worksheets[0]
+    except Exception as e:
+        st.error(f"❌ Failed to load one of the Excel files: {e}")
+        st.stop()
+    try:
         workbookEDass = openpyxl.load_workbook(EDass_database_bytes)
         first_sheetEDass = workbookEDass.worksheets[0]
+    except Exception as e:
+        st.error(f"❌ Failed to load one of the Excel files: {e}")
+        st.stop()
+    try:
         workbookSVHC = openpyxl.load_workbook(SVHC_database_bytes)
         first_sheetSVHC = workbookSVHC.worksheets[0]
+    except Exception as e:
+        st.error(f"❌ Failed to load one of the Excel files: {e}")
+        st.stop()
+    try:
         workbookSVHC_intent = openpyxl.load_workbook(SVHCintent_database_bytes)
         first_sheetSVHC_intent = workbookSVHC_intent.worksheets[0]
+    except Exception as e:
+        st.error(f"❌ Failed to load one of the Excel files: {e}")
+        st.stop()
+    try:
         workbookPACT = openpyxl.load_workbook(PACT_database_bytes)
         first_sheetPACT = workbookPACT.worksheets[0]
+    try:
         workbookCoRAP = openpyxl.load_workbook(CoRAP_database_bytes)
         first_sheetCoRAP = workbookCoRAP.worksheets[0]
     except Exception as e:
