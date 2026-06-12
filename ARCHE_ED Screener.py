@@ -364,11 +364,10 @@ def process_data(file):
         "SVHC: Yes/No", "SVHC: Reason", "SVHC: Date Inclusion", "SVHC: Decision",
         "Food additive: Yes/No", "Food additive: E number", "Food flavourings: Yes/No", "Food flavourings: FL",
         "SVHC intent: Yes/No", "SVHC intent: Status", "SVHC intent: Scope", "SVHC intent: Last updated",
-        "PACT: Yes/No", "PACT: SEv", "PACT: SEv link", "PACT: DEv", "PACT: DEv link", "PACT: ED", "PACT: ED link",
-        "PACT: ARN", "PACT: ARN link", "PACT: PBT", "PACT: PBT link", "PACT: CLH", "PACT: CLH link", "PACT: SVHC",
-        "PACT: SVHC link",
+        "DEv: Yes/No","DEv link","ARN: Yes/No","ARN Summary","ARN Status","ARN Foreseen Regulatory Need","ARN Date of Assessment",
         "CoRAP: Yes/No", "CoRAP: Initial grounds of Concern", "CoRAP: Status", "CoRAP: Latest update"
     ]
+
     # Add empty key-value pairs using dictionary unpacking
     clp_info = [{**entry, **{key: "-" for key in key_names}} for entry in clp_info]
 
@@ -425,35 +424,30 @@ def process_data(file):
     # >>> FROM ECHA-CHEM <<<
     # ED assessment list
     EDass_url = "https://chem.echa.europa.eu/activity-lists/edAssessment"
-    EDass_database_bytes = None
     EDass_database_bytes = asyncio.get_event_loop().run_until_complete(download_echachem_list(EDass_url))
     workbookEDass = openpyxl.load_workbook(EDass_database_bytes, data_only=True)
     first_sheetEDass = workbookEDass.worksheets[0]
     st.write("EDass xlsx loaded")
     # SVHC list = Candidate list
     SVHC_url = "https://chem.echa.europa.eu/obligation-lists/candidateList"
-    SVHC_database_bytes = None
     SVHC_database_bytes = asyncio.get_event_loop().run_until_complete(download_echachem_list(SVHC_url))
     workbookSVHC = openpyxl.load_workbook(SVHC_database_bytes, data_only=True)
     first_sheetSVHC = workbookSVHC.worksheets[0]
     st.write("SVHC xlsx loaded")
     # SVHC intent database
     SVHCintent_url = "https://chem.echa.europa.eu/activity-lists/svhcIdentification"
-    SVHC_database_bytes = None
-    SVHC_database_bytes = asyncio.get_event_loop().run_until_complete(download_echachem_list(SVHCintent_url))
-    workbookSVHC = openpyxl.load_workbook(SVHC_database_bytes, data_only=True)
-    first_sheetSVHC = workbookSVHC.worksheets[0]
+    SVHCintent_database_bytes = asyncio.get_event_loop().run_until_complete(download_echachem_list(SVHCintent_url))
+    workbookSVHCintent = openpyxl.load_workbook(SVHCintent_database_bytes, data_only=True)
+    first_sheetSVHCintent = workbookSVHCintent.worksheets[0]
     st.write("SVHC intent xlsx loaded")
     # CoRAP database incl Substance Evaluation (SEv, previously on PACT)
     CoRAP_url = "https://chem.echa.europa.eu/activity-lists/substanceEvaluation"
-    CoRAP_database_bytes = None
     CoRAP_database_bytes = asyncio.get_event_loop().run_until_complete(download_echachem_list(CoRAP_url))
     workbookCoRAP = openpyxl.load_workbook(CoRAP_database_bytes, data_only=True)
     first_sheetCoRAP = workbookCoRAP.worksheets[0]
     st.write("CoRAP xlsx loaded")
     # Dossier Evaluation list (DEv, previously on PACT)
     DEv_url = "https://chem.echa.europa.eu/activity-lists/dossierEvaluation"
-    DEv_database_bytes = None
     DEv_database_bytes = asyncio.get_event_loop().run_until_complete(download_echachem_list(DEv_url))
     workbookDEv = openpyxl.load_workbook(DEv_database_bytes, data_only=True)
     first_sheetDEv = workbookDEv.worksheets[0]
@@ -462,10 +456,25 @@ def process_data(file):
     # Stil from old ECHA website (for now?)
     # Assessment of Regulatory Needs
     ARN_url = "https://www.echa.europa.eu/web/guest/assessment-regulatory-needs"
-    ARN_database_bytes = download_echa_list(ARN_url, user_agents_list, source="ARN")
-    workbookARN = openpyxl.load_workbook(ARN_database_bytes, data_only=True)
-    first_sheetARN = workbookARN.worksheets[0]
-    st.write("ARN xlsx loaded")
+    max_retries = 5
+    for attempt in range(1, max_retries + 1):
+        try:
+            ARN_database_bytes = download_echa_list(ARN_url, user_agents_list, source="ARN")
+            if ARN_database_bytes is None:
+                raise ValueError("Download returned None")
+            workbookARN = openpyxl.load_workbook(ARN_database_bytes, data_only=True)
+            first_sheetARN = workbookARN.worksheets[0]
+            st.write("ARN xlsx loaded")
+            break  # success, exit the loop
+        except Exception as e:
+            logging.warning(f"ARN download attempt {attempt} failed: {e}")
+            if attempt < max_retries:
+                st.write(f"ARN download attempt {attempt} failed, retrying...")
+                time.sleep(5)  # wait 5 seconds before retrying
+            else:
+                st.error(f"ARN download failed after {max_retries} attempts.")
+                logging.error(f"ARN download failed after {max_retries} attempts: {e}")
+                st.stop()
 
 
     # >>> FROM UPLOADED DATABASES <<<
@@ -541,7 +550,7 @@ def process_data(file):
                     status_data = status_response.json()
                     job_status = status_data.get("status")
                     st.write(f"Chunk {job['index']}: Job status: {job_status}")
-                    if job_status not in ["STARTED", "EXECUTING","DEQUEUED"]:
+                    if job_status not in ["STARTED", "EXECUTING","DEQUEUED","WAITING"]:
                         job["done"] = True
                         job["output"] = status_data.get("output", [])
                 elif status_response.status_code in [400, 404]:
@@ -560,46 +569,7 @@ def process_data(file):
     st.write("All JSON chunks successfully retrieved and combined")
 
     #### LOOP OVER ALL CAS NUMBERS AND SCREEN SOURCES ####
-
-    # Load all Excel files for using later
-    try:
-        workbook = openpyxl.load_workbook(PPP_database_bytes)
-        sheetPPP = workbook.worksheets[0]
-    except Exception as e:
-        st.error(f"❌ Failed to load PPP Excel file: {e}")
-        st.stop()
-    try:
-        workbookEDass = openpyxl.load_workbook(EDass_database_bytes)
-        first_sheetEDass = workbookEDass.worksheets[0]
-    except Exception as e:
-        st.error(f"❌ Failed to load EDassessment Excel file: {e}")
-        st.stop()
-    try:
-        workbookSVHC = openpyxl.load_workbook(SVHC_database_bytes)
-        first_sheetSVHC = workbookSVHC.worksheets[0]
-    except Exception as e:
-        st.error(f"❌ Failed to load SVHC Excel file: {e}")
-        st.stop()
-    try:
-        workbookSVHC_intent = openpyxl.load_workbook(SVHCintent_database_bytes)
-        first_sheetSVHC_intent = workbookSVHC_intent.worksheets[0]
-    except Exception as e:
-        st.error(f"❌ Failed to load SVHCintent Excel file: {e}")
-        st.stop()
-    try:
-        workbookPACT = openpyxl.load_workbook(PACT_database_bytes)
-        first_sheetPACT = workbookPACT.worksheets[0]
-    except Exception as e:
-        st.error(f"❌ Failed to load PACT Excel file: {e}")
-        st.stop()
-    try:
-        workbookCoRAP = openpyxl.load_workbook(CoRAP_database_bytes)
-        first_sheetCoRAP = workbookCoRAP.worksheets[0]
-    except Exception as e:
-        st.error(f"❌ Failed to load CoRAP Excel file: {e}")
-        st.stop()
-
-    # st.write(CnL_json)
+    st.write(CnL_json)
     i = 0
     while i < len(clp_info):
         st.write(f"Checking chemical: {clp_info[i]["Input"]}")
@@ -675,7 +645,7 @@ def process_data(file):
                                                entry.get("notes")[0]["note"]["noteText"]
             logging.info("Finished Next-SDS API")
         except:
-            st.write(matching_entries)
+            st.write("Issue with NextSDS API")
 
         # Check PPP ED list
         if PPP_database_bytes:
@@ -706,11 +676,11 @@ def process_data(file):
                 for cell in rowExcel_EDass:
                     cell_value = str(cell.value).strip()
                     if cell_value != "-" and cell_value in (clp_info[i]["CAS"], clp_info[i]["EC"],clp_info[i]["Input"]):  # Check both CAS or EC
-                        EDass_authority = first_sheetEDass[f"E{cell.row}"].value
+                        EDass_authority = first_sheetEDass[f"G{cell.row}"].value
                         found_valueEDass = EDass_authority
-                        EDass_status = first_sheetEDass[f"F{cell.row}"].value
-                        EDass_outcome = first_sheetEDass[f"G{cell.row}"].value
-                        EDass_lastupdate = first_sheetEDass[f"H{cell.row}"].value
+                        EDass_status = first_sheetEDass[f"J{cell.row}"].value
+                        EDass_outcome = first_sheetEDass[f"I{cell.row}"].value
+                        EDass_lastupdate = first_sheetEDass[f"F{cell.row}"].value
                         clp_info[i]["ED Assessment List: Yes/No"] = "Yes"
                         clp_info[i]["ED Assessment List: Outcome"] = EDass_outcome
                         clp_info[i]["ED Assessment List: Status"] = EDass_status
@@ -724,7 +694,7 @@ def process_data(file):
         else:
             logging.info("No ECHA ED database")
 
-        # Check SVHC list
+        # Check SVHC list (Candidate List)
         if SVHC_database_bytes:
             # Search for a specific string in the first sheet
             found_valueSVHC = None
@@ -732,10 +702,10 @@ def process_data(file):
                 for cell in rowExcel_SVHC:
                     cell_value = str(cell.value).strip()
                     if cell_value != "-" and cell_value in (clp_info[i]["CAS"], clp_info[i]["EC"],clp_info[i]["Input"]):  # Check both CAS or EC
-                        SVHCreason = first_sheetSVHC[f"E{cell.row}"].value
+                        SVHCreason = first_sheetSVHC[f"F{cell.row}"].value
                         found_valueSVHC = SVHCreason
                         SVHCdate = first_sheetSVHC[f"I{cell.row}"].value
-                        SVHCdecision = first_sheetSVHC[f"J{cell.row}"].value
+                        SVHCdecision = first_sheetSVHC[f"G{cell.row}"].value
                         clp_info[i]["SVHC: Yes/No"] = "Yes"
                         clp_info[i]["SVHC: Reason"] = SVHCreason
                         clp_info[i]["SVHC: Date Inclusion"] = SVHCdate
@@ -752,18 +722,18 @@ def process_data(file):
         if SVHCintent_database_bytes:
             # Search for a specific string in the first sheet
             found_valueSVHC_intent = None
-            for rowExcel_SVHC_intent in first_sheetSVHC_intent.iter_rows(min_row=1, max_row=first_sheetSVHC_intent.max_row, values_only=False):
+            for rowExcel_SVHC_intent in first_sheetSVHCintent.iter_rows(min_row=1, max_row=first_sheetSVHCintent.max_row, values_only=False):
                 for cell in rowExcel_SVHC_intent:
                     cell_value = str(cell.value).strip()
                     if cell_value != "-" and cell_value in (clp_info[i]["CAS"], clp_info[i]["EC"],clp_info[i]["Input"]):  # Check both CAS or EC
                         # Extract the value from column G of the same row
-                        SVHC_intent_status = first_sheetSVHC_intent[f"G{cell.row}"].value
+                        SVHC_intent_status = first_sheetSVHCintent[f"I{cell.row}"].value
                         found_valueSVHC_intent = SVHC_intent_status
-                        SVHC_intent_scope = first_sheetSVHC_intent[f"N{cell.row}"].value
-                        SVHC_intent_lastupdated = first_sheetSVHC_intent[f"AA{cell.row}"].value
+                        SVHC_intent_reason = first_sheetSVHCintent[f"H{cell.row}"].value
+                        SVHC_intent_lastupdated = first_sheetSVHCintent[f"F{cell.row}"].value
                         clp_info[i]["SVHC intent: Yes/No"] = "Yes"
                         clp_info[i]["SVHC intent: Status"] = SVHC_intent_status
-                        clp_info[i]["SVHC intent: Scope"] = SVHC_intent_scope
+                        clp_info[i]["SVHC intent: Reason proposal"] = SVHC_intent_reason
                         clp_info[i]["SVHC intent: Last updated"] = SVHC_intent_lastupdated
                         break
                 if found_valueSVHC_intent:
@@ -773,53 +743,57 @@ def process_data(file):
         else:
             logging.info("No SVHC intent database")
 
-        # Check PACT list
-        if PACT_database_bytes:
+
+
+        # Check Dossier Evaluation List
+        if DEv_database_bytes:
             # Search for a specific string in the first sheet
-            found_valuePACT = None
-            for rowExcel_PACT in first_sheetPACT.iter_rows(min_row=1, max_row=first_sheetPACT.max_row, values_only=False):
-                for cell in rowExcel_PACT:
+            found_valueDEv = None
+            for rowExcel_DEv in first_sheetDEv.iter_rows(min_row=1, max_row=first_sheetDEv.max_row, values_only=False):
+                for cell in rowExcel_DEv:
                     cell_value = str(cell.value).strip()
                     if cell_value != "-" and cell_value in (clp_info[i]["CAS"], clp_info[i]["EC"],clp_info[i]["Input"]):  # Check both CAS or EC
-                        # print(f"Found '{CAS}' in row {cell.row}, column {cell.column} on PACT list.")
-                        # Extract the SEv from column E of the same row
-                        PACT_SEv = first_sheetPACT[f"E{cell.row}"].value
-                        found_valuePACT = PACT_SEv
-                        PACT_SEv_link = first_sheetPACT[f"F{cell.row}"].value
-                        PACT_DEv = first_sheetPACT[f"I{cell.row}"].value
-                        PACT_DEv_link = first_sheetPACT[f"J{cell.row}"].value
-                        PACT_ED = first_sheetPACT[f"K{cell.row}"].value
-                        PACT_ED_link = first_sheetPACT[f"L{cell.row}"].value
-                        PACT_ARN = first_sheetPACT[f"M{cell.row}"].value
-                        PACT_ARN_link = first_sheetPACT[f"N{cell.row}"].value
-                        PACT_PBT = first_sheetPACT[f"G{cell.row}"].value
-                        PACT_PBT_link = first_sheetPACT[f"H{cell.row}"].value
-                        PACT_CLH = first_sheetPACT[f"O{cell.row}"].value
-                        PACT_CLH_link = first_sheetPACT[f"P{cell.row}"].value
-                        PACT_SVHC = first_sheetPACT[f"Q{cell.row}"].value
-                        PACT_SVHC_link = first_sheetPACT[f"R{cell.row}"].value
-                        clp_info[i]["PACT: Yes/No"] = "Yes"
-                        clp_info[i]["PACT: SEv"] = PACT_SEv
-                        clp_info[i]["PACT: SEv link"] = PACT_SEv_link
-                        clp_info[i]["PACT: DEv"] = PACT_DEv
-                        clp_info[i]["PACT: DEv link"] = PACT_DEv_link
-                        clp_info[i]["PACT: ED"] = PACT_ED
-                        clp_info[i]["PACT: ED link"] = PACT_ED_link
-                        clp_info[i]["PACT: ARN"] = PACT_ARN
-                        clp_info[i]["PACT: ARN link"] = PACT_ARN_link
-                        clp_info[i]["PACT: PBT"] = PACT_PBT
-                        clp_info[i]["PACT: PBT link"] = PACT_PBT_link
-                        clp_info[i]["PACT: CLH"] = PACT_CLH
-                        clp_info[i]["PACT: CLH link"] = PACT_CLH_link
-                        clp_info[i]["PACT: SVHC"] = PACT_SVHC
-                        clp_info[i]["PACT: SVHC link"] = PACT_SVHC_link
+                        # Extract the value from column G of the same row
+                        DEv_link = first_sheetDEv[f"I{cell.row}"].value     # the first hit is the most recent info
+                        found_valueDEv = DEv_link
+                        clp_info[i]["DEv: Yes/No"] = "Yes"
+                        clp_info[i]["DEv link"] = DEv_link
                         break
-                if found_valuePACT:
+                if found_valueDEv:
                     break
-            if not found_valuePACT:
-                clp_info[i]["PACT: Yes/No"] = "No"
+            if not found_valueDEv:
+                clp_info[i]["DEv: Yes/No"] = "No"
         else:
-            logging.info("No PACT database")
+            logging.info("No DEv database")
+
+        # Check Assessment or Regulatory Needs List
+        first_sheetARN = workbookARN.worksheets[0]
+        if ARN_database_bytes:
+            # Search for a specific string in the first sheet
+            found_valueARN = None
+            for rowExcel_ARN in first_sheetARN.iter_rows(min_row=1, max_row=first_sheetARN.max_row, values_only=False):
+                for cell in rowExcel_ARN:
+                    cell_value = str(cell.value).strip()
+                    if cell_value != "-" and cell_value in (clp_info[i]["CAS"], clp_info[i]["EC"],clp_info[i]["Input"]):  # Check both CAS or EC
+                        # Extract the value from column G of the same row
+                        ARN_link = first_sheetARN[f"K{cell.row}"].value     # the first hit is the most recent info
+                        found_valueARN = ARN_link
+                        ARN_status = first_sheetARN[f"F{cell.row}"].value     # the first hit is the most recent info
+                        ARN_foreseen = first_sheetARN[f"H{cell.row}"].value     # the first hit is the most recent info
+                        ARN_date = first_sheetARN[f"J{cell.row}"].value     # the first hit is the most recent info
+                        clp_info[i]["ARN: Yes/No"] = "Yes"
+                        clp_info[i]["ARN Summary"] = ARN_link
+                        clp_info[i]["ARN Status"] = ARN_status
+                        clp_info[i]["ARN Foreseen Regulatory Need"] = ARN_foreseen
+                        clp_info[i]["ARN Date of Assessment"] = ARN_date
+                        break
+                if found_valueARN:
+                    break
+            if not found_valueARN:
+                clp_info[i]["ARN: Yes/No"] = "No"
+        else:
+            logging.info("No ARN database")
+
 
         # Check CoRAP
         if CoRAP_database_bytes:
@@ -829,10 +803,10 @@ def process_data(file):
                 for cell in rowExcel_CoRAP:
                     cell_value = str(cell.value).strip()
                     if cell_value != "-" and cell_value in (clp_info[i]["CAS"], clp_info[i]["EC"],clp_info[i]["Input"]): # Check both CAS or EC
-                        CoRAPgrounds = first_sheetCoRAP[f"H{cell.row}"].value
+                        CoRAPgrounds = first_sheetCoRAP[f"I{cell.row}"].value
                         found_valueCoRAP = CoRAPgrounds
-                        CoRAPstatus = first_sheetCoRAP[f"I{cell.row}"].value
-                        CoRAPlastupdate = first_sheetCoRAP[f"J{cell.row}"].value
+                        CoRAPstatus = first_sheetCoRAP[f"J{cell.row}"].value
+                        CoRAPlastupdate = first_sheetCoRAP[f"F{cell.row}"].value
                         clp_info[i]["CoRAP: Yes/No"] = "Yes"
                         clp_info[i]["CoRAP: Initial grounds of Concern"] = CoRAPgrounds
                         clp_info[i]["CoRAP: Status"] = CoRAPstatus
@@ -939,7 +913,7 @@ def process_data(file):
 
     # Make the URLs clickable, Loop from the second row to the last row
     ws = wb["Sheet1"]
-    columns = [11, 50, 52, 56, 60]  # C&L, PACT SEv, DEv, ARN, CLH
+    columns = [11, 49, 51]  # C&L, DEv, ARN
     link_style = Font(color="0000FF", underline="single")
     for row in range(2, ws.max_row + 1):
         for col in columns:
@@ -958,7 +932,7 @@ def process_data(file):
         ["", "", "", "", "", "Evaluated for ED in", "", "", "", "", "", "Also found in", "", ""],
         ["Name (ECHA-CHEM)", "Input", "CAS number", "EC number", "Classification", "ED assessment",
          "On BPR/PPPR list (for ED-HH; for ED-ENV)", "REACH SVHC candidate", "REACH SVHC intent",
-         "CORAP List", "PACT: DEv", "PACT: ARN", "Food lists", "Summary Harmonized", "Summary self-classified"]
+         "CORAP List", "DEv", "ARN", "Food lists", "Summary Harmonized", "Summary self-classified"]
     ]
     # Arrange headers and formatting
     for row_index, row_data in enumerate(headers, start=1):
@@ -988,11 +962,11 @@ def process_data(file):
         # REACH SVHC intent ED?
         ws[f"I{row}"] = f'=IF(Sheet1!AR{row - 1}="Yes","Yes: " & Sheet1!AS{row - 1},"No")'
         # CORAP list ED?
-        ws[f"J{row}"] = f'=Sheet1!BK{row - 1}&" ("&Sheet1!BL{row - 1}&"; "&Sheet1!BM{row - 1}&")"'
-        # PACT: Dev
-        ws[f"K{row}"] = f'=Sheet1!AY{row - 1}'
-        # PACT: ARN
-        ws[f"L{row}"] = f'=Sheet1!BC{row - 1}'
+        ws[f"J{row}"] = f'=Sheet1!BC{row - 1}&" ("&Sheet1!BD{row - 1}&"; "&Sheet1!BE{row - 1}&")"'
+        # DEv
+        ws[f"K{row}"] = f'=Sheet1!AV{row - 1}'
+        # ARN
+        ws[f"L{row}"] = f'=Sheet1!AX{row - 1}'
         # Food additives/flavourings
         ws[
             f"M{row}"] = f'=IF(OR(Sheet1!AN{row - 1}="Yes",Sheet1!AP{row - 1}="Yes"),"Yes (" & Sheet1!AO{row - 1} & "; " & Sheet1!AQ{row - 1} & ")", "No")'
@@ -1065,8 +1039,10 @@ def process_data(file):
             zip_file.writestr("databases/SVHC_Database.xlsx", SVHC_database_bytes.getvalue())
         if SVHCintent_database_bytes:
             zip_file.writestr("databases/SVHC intent_Database.xlsx", SVHCintent_database_bytes.getvalue())
-        if PACT_database_bytes:
-            zip_file.writestr("databases/PACT_Database.xlsx", PACT_database_bytes.getvalue())
+        if DEv_database_bytes:
+            zip_file.writestr("databases/DEv_Database.xlsx", DEv_database_bytes.getvalue())
+        if ARN_database_bytes:
+            zip_file.writestr("databases/ARN_Database.xlsx", ARN_database_bytes.getvalue())
         if CoRAP_database_bytes:
             zip_file.writestr("databases/CoRAP_Database.xlsx", CoRAP_database_bytes.getvalue())
         if workbookBPR:

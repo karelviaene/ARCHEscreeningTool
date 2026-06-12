@@ -57,35 +57,6 @@ order = pd.unique(CASall)  # Save the order for reordering later on (needs to be
 CASall = list(set(CASall))  # Keep only unique values
 N_CAS = len(CASall)
 
-# Create dictionary to save screening output in
-clp_info = [{"id": i + 1} for i in range(N_CAS)]  # Create list of dictionaries with length number of CAS numbers
-now = datetime.now()
-for i, entry in enumerate(clp_info):  # Add CAS and date to all entries
-    entry["Input"] = CASall[i]
-    entry["Date collected"] = now.strftime("%d/%m/%Y %H:%M:%S")
-# List of names to add as keys
-key_names = [
-    "CAS", "EC", "Name ECHA-CHEM", "ECHA-CHEM checked", "REACH tonnage band", "On C&L?", "Entries C&L",
-    "C&L URL", "C&L Type", "Joint Entries", "Classification - Hazard classes",
-    "Classification - Hazard statements", "Classification - Organs/ExposureRoute",
-    "Labeling - Hazard statements", "Labeling - Supplementary Hazard statements",
-    "Labeling - Organs/ExposureRoute", "Specific concentration limits", "M-factors", "C&L notes",
-    "ED PPP: Yes/No", "ED PPP: Status", "ED PPP: Conclusion HH", "ED PPP: Conclusion non-TO",
-    "ED PPP: EFSA conclusion link",
-    "BPR: Yes/No", "BPR: ED HH", "BPR: ED ENV",
-    "ED Assessment List: Yes/No", "ED Assessment List: Outcome",
-    "ED Assessment List: Status", "ED Assessment List: Authority", "ED Assessment List: Last updated",
-    "SVHC: Yes/No", "SVHC: Reason", "SVHC: Date Inclusion", "SVHC: Decision",
-    "Food additive: Yes/No", "Food additive: E number", "Food flavourings: Yes/No", "Food flavourings: FL",
-    "SVHC intent: Yes/No", "SVHC intent: Status", "SVHC intent: Scope", "SVHC intent: Last updated",
-    "PACT: Yes/No", "PACT: SEv", "PACT: SEv link", "PACT: DEv", "PACT: DEv link", "PACT: ED", "PACT: ED link",
-    "PACT: ARN", "PACT: ARN link", "PACT: PBT", "PACT: PBT link", "PACT: CLH", "PACT: CLH link", "PACT: SVHC",
-    "PACT: SVHC link",
-    "CoRAP: Yes/No", "CoRAP: Initial grounds of Concern", "CoRAP: Status", "CoRAP: Latest update"
-]
-# Add empty key-value pairs using dictionary unpacking
-clp_info = [{**entry, **{key: "-" for key in key_names}} for entry in clp_info]
-
 # NextSDS info
 # Load API key
 api_file = select_file()
@@ -127,6 +98,7 @@ while not all(job["done"] for job in jobs):
     time.sleep(5)
     for job in jobs:
         if job["done"]:
+            print(job)
             continue
         try:
             status_response = requests.get(f"{status_url}/{job['id']}", headers=headers)
@@ -138,7 +110,7 @@ while not all(job["done"] for job in jobs):
                 if job_status == "FAILED":
                     print(f"Chunk {job['index']} - FAIL DETAILS:")
                     print(json.dumps(status_data, indent=2))  # full response
-                if job_status not in ["STARTED", "EXECUTING","DEQUEUED"]:
+                if job_status not in ["STARTED", "EXECUTING","DEQUEUED","WAITING"]:
                     job["done"] = True
                     job["output"] = status_data.get("output", [])
             elif status_response.status_code in [400, 404]:
@@ -154,6 +126,8 @@ while not all(job["done"] for job in jobs):
 # Step 3: Combine all outputs
 CnL_json = []
 for job in jobs:
+    print(job)
+    print(job["output"])
     if job["output"]:
         CnL_json.extend(job["output"])
 
