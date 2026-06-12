@@ -1,5 +1,6 @@
 bs4
 openpyxl
 nest_asyncio
+playwright
 async_playwright
 asyncio
