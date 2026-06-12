@@ -16,6 +16,13 @@ import time
 from datetime import datetime
 import json
 import copy
+import csv
+import asyncio
+import nest_asyncio
+nest_asyncio.apply()
+from playwright.async_api import async_playwright
+import io
+
 st.title("ARCHE screener")
 st.header("ARCHE screener")
 
@@ -53,6 +60,20 @@ if "log_stream" not in st.session_state:
     st.session_state.log_stream = StringIO()
     logging.basicConfig(stream=st.session_state.log_stream, level=logging.INFO,
                         format='%(asctime)s - %(levelname)s - %(message)s')
+
+# List of headers to cycle through to avoid detection when scraping
+user_agents_list = [
+    'Mozilla/5.0 (iPad; CPU OS 12_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.83 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.51 Safari/537.36'
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.64 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:91.0) Gecko/20100101 Firefox/91.0',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15A372 Safari/604.1',
+    'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.159 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 11_2_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15',
+    'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.5005.78 Mobile Safari/537.36',
+    'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:98.0) Gecko/20100101 Firefox/98.0'
+]
 
 # Normalize IDs (only valid characters)
 def normalize_id(value: str) -> str:
@@ -105,6 +126,183 @@ def is_valid_ec(ec: str) -> bool:
     """
     return re.fullmatch(r"\d{3}-\d{3}-\d", ec) is not None
 
+def download_echa_list(echa_url, user_agents_list,source=""):
+    try:
+        headers = {'User-Agent': random.choice(user_agents_list)}
+        responseECHA = requests.get(echa_url, headers=headers)
+
+        unique_substances = None
+        if responseECHA.status_code == 200:
+            soupECHA = BeautifulSoup(responseECHA.text, "html.parser")
+            small_tag = soupECHA.find("small", class_="search-results")
+            if small_tag:
+                text = small_tag.get_text(strip=True)
+                match = re.search(r"of\s+([\d,]+)\s+results", text)
+                if match:
+                    unique_substances = match.group(1).replace(",", "")  # always strip comma
+            soupECHA.decompose()
+        responseECHA.close()
+        if not unique_substances:
+            logging.info("Could not determine the number of unique substances.")
+            return None
+
+        # Data or payload sent with the POST request+
+        paramsECHA = {
+            "p_p_id": "disslists_WAR_disslistsportlet",
+            "p_p_lifecycle": "2",
+            "p_p_state": "normal",
+            "p_p_mode": "view",
+            "p_p_resource_id": "exportResults",
+            "p_p_cacheability": "cacheLevelPage"
+        }
+        dataECHA = {
+            "_disslists_WAR_disslistsportlet_formDate": int(round(time.time() * 1000)),
+            "_disslists_WAR_disslistsportlet_exportColumns": "name,ecNumber,casNumber,lec_submitter,prc_public_status,prc_conclusion,diss_update_date,dte_first_published",
+            "_disslists_WAR_disslistsportlet_orderByCol": "diss_update_date",
+            "_disslists_WAR_disslistsportlet_orderByType": "asc",
+            "_disslists_WAR_disslistsportlet_searchFormColumns": "prc_public_status,prc_conclusion,lec_submitter,dte_intention,dte_assessment,diss_update_date",
+            "_disslists_WAR_disslistsportlet_searchFormElements": "DROP_DOWN,DROP_DOWN,DROP_DOWN,DATE_PICKER,DATE_PICKER,DATE_PICKER",
+            "_disslists_WAR_disslistsportlet_total": unique_substances,
+            "_disslists_WAR_disslistsportlet_exportType": "xls"
+        }
+        headersEDass = {
+            "User-Agent": random.choice(user_agents_list),
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+
+        # Adjust based on source
+        if source == "PACT":
+            paramsECHA["p_p_id"] = "disslists_WAR_disslistsportlet"
+            dataECHA = {
+                "_disspact_WAR_disspactportlet_formDate": int(round(time.time() * 1000)),
+                "_disspact_WAR_disspactportlet_exportColumns": "name,ecNumber,casNumber,DISLIST_CORAP,DISLIST_PBT,DISLIST_DOSSIER_EVALUATION,DISLIST_ED,DISLIST_ARN,DISLIST_ROI_CLH,DISLIST_ROI_SVHC,DISLIST_ANX_14_RECOMMENDATION,DISLIST_ROI_RESTRICTION",
+                "_disspact_WAR_disspactportlet_exportDislistsColumns": "DISLIST_CORAP,DISLIST_PBT,DISLIST_DOSSIER_EVALUATION,DISLIST_ED,DISLIST_ARN,DISLIST_ROI_CLH,DISLIST_ROI_SVHC,DISLIST_ANX_14_RECOMMENDATION,DISLIST_ROI_RESTRICTION",
+                "_disspact_WAR_disspactportlet_orderByCol": "name",
+                "_disspact_WAR_disspactportlet_orderByType": "asc",
+                "_disspact_WAR_disspactportlet_orderedSearchableShowListColumns": "DISLIST_PBT_diss_update_date,processes,DISLIST_PBT_diss_concern",
+                "_disspact_WAR_disspactportlet_orderedSearchableShowListElements": "DATE_PICKER,MULTI_VALUE,INPUT_TEXT",
+                "_disspact_WAR_disspactportlet_orderedSearchableShowListProcessColumns": "PACT,PACT,PACT",
+                "_disspact_WAR_disspactportlet_multiValueSearchOperatorprocesses": "AND",
+                "_disspact_WAR_disspactportlet_total": unique_substances,
+                "_disspact_WAR_disspactportlet_exportType": "xls"
+            }
+        if source == "SVHC":
+            dataECHA["_disslists_WAR_disslistsportlet_exportColumns"] = "name,ecNumber,casNumber,haz_detailed_concern,dte_inclusion,doc_cat_decision,doc_cat_iuclid_dossier,doc_cat_supdoc,doc_cat_rcom,prc_external_remarks",
+        if source == "SVHCintent":
+            dataECHA["_disslists_WAR_disslistsportlet_exportColumns"] = "name,ecNumber,casNumber,sid_other_info_external,sid_avi_index_no,prc_public_status,dte_intention,sbm_expected_submission,sbm_first_submission,dte_withdrawn,lec_submitter,prc_external_remarks,haz_detailed_concern,dte_public_consult_start,dte_public_consult_deadline,doc_cat_report,doc_cat_rcom,prc_msc_agreement_year,doc_cat_agreement,dte_adoption,doc_cat_supdoc,doc_cat_opinion,dte_opinion,doc_cat_minor_opinion,dte_inclusion,diss_update_date,dte_first_published",
+        if source == "CoRAP":
+            dataECHA["_disslists_WAR_disslistsportlet_exportColumns"] = "name,ecNumber,casNumber,cnt_country,prc_evaluation_year,lec_submitter,haz_detailed_concern,cse_public_lifecycle,diss_update_date,doc_cat_decision,doc_cat_conclusion,doc_cat_justification,dte_corap_publication,lec_contact_address,lec_organization_name,lec_remarks,prc_appeal_link,prc_external_remarks,diss_concern,relevance,dte_first_published",
+        if source == "ARN":
+            dataECHA["_disslists_WAR_disslistsportlet_exportColumns"] = (
+                "name,ecNumber,casNumber,cse_trigger_categories,prc_public_status,"
+                "prc_followup_activity,prc_regulatory_hypothesis,dte_intention,"
+                "dte_conclusion_published,doc_cat_conclusion,doc_cat_assessm,group_name,"
+                "prc_external_remarks,lec_submitter,lec_organization_name,lec_email,"
+                "lec_phone,lec_contact_address,cnt_country,diss_update_date,dte_first_published"
+            )
+            dataECHA["_disslists_WAR_disslistsportlet_orderByCol"] = "dte_conclusion_published"
+            dataECHA["_disslists_WAR_disslistsportlet_orderByType"] = "desc"
+            dataECHA["_disslists_WAR_disslistsportlet_searchFormColumns"] = (
+                "prc_public_status,lec_submitter,cse_trigger_categories,dte_intention,"
+                "prc_followup_activity,dte_conclusion_published,prc_regulatory_hypothesis,"
+                "diss_update_date,group_name"
+            )
+            dataECHA["_disslists_WAR_disslistsportlet_searchFormElements"] = (
+                "DROP_DOWN,DROP_DOWN,DROP_DOWN,DATE_PICKER,DROP_DOWN,"
+                "DATE_PICKER,MULTI_VALUE,DATE_PICKER,INPUT_TEXT"
+            )
+            dataECHA["_disslists_WAR_disslistsportlet_substance_identifier_field_key"] = ""
+            dataECHA["_disslists_WAR_disslistsportlet_prc_public_status"] = ""
+            dataECHA["_disslists_WAR_disslistsportlet_lec_submitter"] = ""
+            dataECHA["_disslists_WAR_disslistsportlet_cse_trigger_categories"] = ""
+            dataECHA["_disslists_WAR_disslistsportlet_dte_intentionFrom"] = ""
+            dataECHA["_disslists_WAR_disslistsportlet_dte_intentionTo"] = ""
+            dataECHA["_disslists_WAR_disslistsportlet_prc_followup_activity"] = ""
+            dataECHA["_disslists_WAR_disslistsportlet_dte_conclusion_publishedFrom"] = ""
+            dataECHA["_disslists_WAR_disslistsportlet_dte_conclusion_publishedTo"] = ""
+            dataECHA["_disslists_WAR_disslistsportlet_multiValueSearchOperatorprc_regulatory_hypothesis"] = "AND"
+            dataECHA["_disslists_WAR_disslistsportlet_diss_update_dateFrom"] = ""
+            dataECHA["_disslists_WAR_disslistsportlet_diss_update_dateTo"] = ""
+            dataECHA["_disslists_WAR_disslistsportlet_group_name"] = ""
+
+        responseECHA2 = requests.post(echa_url, params=paramsECHA, data=dataECHA, headers=headersEDass, stream=True)
+        if responseECHA2.status_code == 200:
+            ECHA_database_bytes = BytesIO(responseECHA2.content)
+            logging.info(f"Downloaded {echa_url}")
+            responseECHA2.close()
+            return ECHA_database_bytes
+        else:
+            logging.info(f"Failed to download {echa_url}. Status code:", responseECHA2.status_code)
+            responseECHA2.close()
+            return None
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Network error while accessing {echa_url}: {e}")
+        return None
+
+
+# -------- Function to download a list from the ECHA-CHEM website url --------
+async def download_echachem_list(list_url):
+    """Click the 'Download full list' button and capture the file into BytesIO."""
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=['--disable-blink-features=AutomationControlled']
+        )
+        context = await browser.new_context(
+            user_agent=random.choice(user_agents_list),
+            viewport={'width': 1280, 'height': 720},
+            device_scale_factor=1
+        )
+        page = await context.new_page()
+
+        await page.goto(list_url, wait_until="networkidle")
+
+        # Handle cookie/consent banner if present
+        try:
+            consent_button = page.locator('button:has-text("I accept the terms")')
+            if await consent_button.is_visible():
+                await consent_button.click()
+                await page.wait_for_load_state("networkidle")
+        except Exception as e:
+            print(f"[WARN] Consent button not found: {e}")
+
+        # Wait for the download button to appear before attempting click
+        download_btn = page.locator('button:has-text("Download full list")')
+        try:
+            await download_btn.wait_for(state="visible", timeout=15000)
+        except Exception:
+            await browser.close()
+            raise RuntimeError(f"'Download full list' button not found on page: {list_url}")
+
+        # Intercept the download and click the button simultaneously
+        try:
+            async with page.expect_download(timeout=30000) as download_info:
+                await download_btn.click()
+            download = await download_info.value
+        except Exception as e:
+            await browser.close()
+            raise RuntimeError(f"Download did not start after clicking the button: {e}")
+
+        # Read the downloaded file directly into BytesIO (never touches disk)
+        try:
+            stream = await download.path()  # temp path Playwright wrote it to
+            if stream is None:
+                raise FileNotFoundError("Download path is None — the file may have failed to download.")
+            echachem_bytes = BytesIO()
+            with open(stream, "rb") as f:
+                echachem_bytes.write(f.read())
+            echachem_bytes.seek(0)
+        except Exception as e:
+            await browser.close()
+            raise RuntimeError(f"Failed to read downloaded file into BytesIO: {e}")
+
+        await browser.close()
+
+    print(f"[✓] Downloaded '{download.suggested_filename}' into BytesIO.")
+    return echachem_bytes
+
+
 def process_data(file):
     logging.info("Started ED screener process")
     # Load file with CAS (or other input strings)
@@ -120,6 +318,7 @@ def process_data(file):
     seen = set()
     order = []  # Save the order for reordering later on (needs to be unique values)
 
+    # Quality check on IDs (eg CAS, EC)
     for raw in raw_values:
         norm = normalize_id(raw)
         if not norm:
@@ -143,22 +342,6 @@ def process_data(file):
     logging.info(f"Valid CAS: {len(valid_cas)} | Valid EC: {len(valid_ec)} | Invalid: {len(invalid_ids)}")
     logging.info(f"Unique valid identifiers kept (order preserved): {len(chem_ids)}")
     st.write(f'The following ID numbers were invalid and therefore not screened: {invalid_ids}')
-
-    # CASall = CASallpd[selected_col].dropna().tolist()   # selected_col is chosen in the app
-    # CASall = [re.sub(r'[^\d\-]', '', str(cas)) for cas in CASall]   # regexp to remove all non-digits and non-hyphen
-    # order = pd.unique(CASall)  # Save the order for reordering later on (needs to be unique values)
-    # CASall = list(set(CASall))  # Keep only unique values
-    #
-    # # Only work with valid CAS numbers
-    # invalid_cas_list = []  # store faulty CAS numbers
-    # valid_CAS = []  # store validated CAS numbers
-    # for cas in CASall:
-    #     if valid_cas_format(cas) and valid_cas_checksum(cas):
-    #         valid_CAS.append(cas)
-    #     else:
-    #         invalid_cas_list.append(cas)
-    # N_CAS = len(valid_CAS)
-    # st.write(f'The following CAS numbers were invalid and therefore not screened: {invalid_cas_list}')
 
     # Create dictionary to save screening output in
     clp_info = [{"id": i + 1} for i in range(N_IDs)]  # Create list of dictionaries with length number of valid CAS numbers
@@ -213,98 +396,16 @@ def process_data(file):
         'Mozilla/5.0 (Windows NT 10.0; ARM64; rv:110.0) Gecko/20100101 Firefox/110.0'
     ]
     # Function to download lists from the ECHA website
-    def download_echa_list(echa_url, user_agents_list,source):
-        try:
-            headers = {'User-Agent': random.choice(user_agents_list)}
-            responseECHA = requests.get(echa_url, headers=headers)
-
-            unique_substances = None
-            if responseECHA.status_code == 200:
-                soupECHA = BeautifulSoup(responseECHA.text, "html.parser")
-                small_tag = soupECHA.find("small", class_="search-results")
-                if small_tag:
-                    text = small_tag.get_text(strip=True)
-                    match = re.search(r"of\s+([\d,]+)\s+results", text)
-                    if match:
-                        if source == "PACT":
-                            unique_substances = match.group(1).replace(",", "")
-                        else:
-                            unique_substances = match.group(1)
-                soupECHA.decompose()
-            responseECHA.close()
-            if not unique_substances:
-                logging.info("Could not determine the number of unique substances.")
-                return None
-
-            # Data or payload sent with the POST request+
-            paramsECHA = {
-                "p_p_id": "disslists_WAR_disslistsportlet",
-                "p_p_lifecycle": "2",
-                "p_p_state": "normal",
-                "p_p_mode": "view",
-                "p_p_resource_id": "exportResults",
-                "p_p_cacheability": "cacheLevelPage"
-            }
-            dataECHA = {
-                "_disslists_WAR_disslistsportlet_formDate": int(round(time.time() * 1000)),
-                "_disslists_WAR_disslistsportlet_exportColumns": "name,ecNumber,casNumber,lec_submitter,prc_public_status,prc_conclusion,diss_update_date,dte_first_published",
-                "_disslists_WAR_disslistsportlet_orderByCol": "diss_update_date",
-                "_disslists_WAR_disslistsportlet_orderByType": "asc",
-                "_disslists_WAR_disslistsportlet_searchFormColumns": "prc_public_status,prc_conclusion,lec_submitter,dte_intention,dte_assessment,diss_update_date",
-                "_disslists_WAR_disslistsportlet_searchFormElements": "DROP_DOWN,DROP_DOWN,DROP_DOWN,DATE_PICKER,DATE_PICKER,DATE_PICKER",
-                "_disslists_WAR_disslistsportlet_total": unique_substances,
-                "_disslists_WAR_disslistsportlet_exportType": "xls"
-            }
-            headersEDass = {
-                "User-Agent": random.choice(user_agents_list),
-                "Content-Type": "application/x-www-form-urlencoded",
-            }
-
-            # Adjust based on source
-            if source == "PACT":
-                paramsECHA["p_p_id"] = "disslists_WAR_disslistsportlet"
-                dataECHA = {
-                    "_disspact_WAR_disspactportlet_formDate": int(round(time.time() * 1000)),
-                    "_disspact_WAR_disspactportlet_exportColumns": "name,ecNumber,casNumber,DISLIST_CORAP,DISLIST_PBT,DISLIST_DOSSIER_EVALUATION,DISLIST_ED,DISLIST_ARN,DISLIST_ROI_CLH,DISLIST_ROI_SVHC,DISLIST_ANX_14_RECOMMENDATION,DISLIST_ROI_RESTRICTION",
-                    "_disspact_WAR_disspactportlet_exportDislistsColumns": "DISLIST_CORAP,DISLIST_PBT,DISLIST_DOSSIER_EVALUATION,DISLIST_ED,DISLIST_ARN,DISLIST_ROI_CLH,DISLIST_ROI_SVHC,DISLIST_ANX_14_RECOMMENDATION,DISLIST_ROI_RESTRICTION",
-                    "_disspact_WAR_disspactportlet_orderByCol": "name",
-                    "_disspact_WAR_disspactportlet_orderByType": "asc",
-                    "_disspact_WAR_disspactportlet_orderedSearchableShowListColumns": "DISLIST_PBT_diss_update_date,processes,DISLIST_PBT_diss_concern",
-                    "_disspact_WAR_disspactportlet_orderedSearchableShowListElements": "DATE_PICKER,MULTI_VALUE,INPUT_TEXT",
-                    "_disspact_WAR_disspactportlet_orderedSearchableShowListProcessColumns": "PACT,PACT,PACT",
-                    "_disspact_WAR_disspactportlet_multiValueSearchOperatorprocesses": "AND",
-                    "_disspact_WAR_disspactportlet_total": unique_substances,
-                    "_disspact_WAR_disspactportlet_exportType": "xls"
-                }
-            if source == "SVHC":
-                dataECHA["_disslists_WAR_disslistsportlet_exportColumns"] = "name,ecNumber,casNumber,haz_detailed_concern,dte_inclusion,doc_cat_decision,doc_cat_iuclid_dossier,doc_cat_supdoc,doc_cat_rcom,prc_external_remarks",
-            if source == "SVHCintent":
-                dataECHA["_disslists_WAR_disslistsportlet_exportColumns"] = "name,ecNumber,casNumber,sid_other_info_external,sid_avi_index_no,prc_public_status,dte_intention,sbm_expected_submission,sbm_first_submission,dte_withdrawn,lec_submitter,prc_external_remarks,haz_detailed_concern,dte_public_consult_start,dte_public_consult_deadline,doc_cat_report,doc_cat_rcom,prc_msc_agreement_year,doc_cat_agreement,dte_adoption,doc_cat_supdoc,doc_cat_opinion,dte_opinion,doc_cat_minor_opinion,dte_inclusion,diss_update_date,dte_first_published",
-            if source == "CoRAP":
-                dataECHA["_disslists_WAR_disslistsportlet_exportColumns"] = "name,ecNumber,casNumber,cnt_country,prc_evaluation_year,lec_submitter,haz_detailed_concern,cse_public_lifecycle,diss_update_date,doc_cat_decision,doc_cat_conclusion,doc_cat_justification,dte_corap_publication,lec_contact_address,lec_organization_name,lec_remarks,prc_appeal_link,prc_external_remarks,diss_concern,relevance,dte_first_published",
-
-            responseECHA2 = requests.post(echa_url, params=paramsECHA, data=dataECHA, headers=headersEDass, stream=True)
-            if responseECHA2.status_code == 200:
-                ECHA_database_bytes = BytesIO(responseECHA2.content)
-                logging.info(f"Downloaded {echa_url}")
-                responseECHA2.close()
-                return ECHA_database_bytes
-            else:
-                logging.info(f"Failed to download {echa_url}. Status code:", responseECHA2.status_code)
-                responseECHA2.close()
-                return None
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Network error while accessing {echa_url}: {e}")
-            return None
 
     #### LOAD DATA SOURCES ####
     logging.info("Loading databases")
     st.info("Loading databases")
 
+    # >>> FROM EFSA WEBSITE <<<#
     # PPP ED
     efsaPPP_url = "https://www.efsa.europa.eu/en/applications/pesticides"
     PPP_ED_string = "overview-endocrine-disrupting-assessment-pesticide-active-substances"
-    responseEFSA = requests.get(efsaPPP_url,headers={'User-Agent': random.choice(user_agents_list)})
+    responseEFSA = requests.get(efsaPPP_url, headers={'User-Agent': random.choice(user_agents_list)})
     ED_PPP = None
     PPP_database_bytes = None
     if responseEFSA.status_code == 200:
@@ -317,74 +418,57 @@ def process_data(file):
             if ED_PPP.status_code == 200:
                 PPP_database_bytes = BytesIO(ED_PPP.content)
                 logging.info("Downloaded EFSA PPP ED database")
+    workbook = openpyxl.load_workbook(PPP_database_bytes)
+    sheetPPP = workbook.worksheets[0]
+    st.write("PPP xlsx loaded")
+
+    # >>> FROM ECHA-CHEM <<<
     # ED assessment list
-    EDass_url = "https://echa.europa.eu/en/ed-assessment"
+    EDass_url = "https://chem.echa.europa.eu/activity-lists/edAssessment"
     EDass_database_bytes = None
-    EDass_database_bytes = download_echa_list(EDass_url, user_agents_list,source="EDass")
-    # SVHC database
-    SVHC_url = "https://echa.europa.eu/en/candidate-list-table"
+    EDass_database_bytes = asyncio.get_event_loop().run_until_complete(download_echachem_list(EDass_url))
+    workbookEDass = openpyxl.load_workbook(EDass_database_bytes, data_only=True)
+    first_sheetEDass = workbookEDass.worksheets[0]
+    st.write("EDass xlsx loaded")
+    # SVHC list = Candidate list
+    SVHC_url = "https://chem.echa.europa.eu/obligation-lists/candidateList"
     SVHC_database_bytes = None
-    SVHC_database_bytes = download_echa_list(SVHC_url, user_agents_list,source="SVHC")
+    SVHC_database_bytes = asyncio.get_event_loop().run_until_complete(download_echachem_list(SVHC_url))
+    workbookSVHC = openpyxl.load_workbook(SVHC_database_bytes, data_only=True)
+    first_sheetSVHC = workbookSVHC.worksheets[0]
+    st.write("SVHC xlsx loaded")
     # SVHC intent database
-    SVHCintent_url = "https://echa.europa.eu/en/registry-of-svhc-intentions"
-    SVHCintent_database_bytes = None
-    SVHCintent_database_bytes = download_echa_list(SVHCintent_url, user_agents_list,source="SVHCintent")
-    # CoRAP database
-    CoRAP_url = "https://echa.europa.eu/en/information-on-chemicals/evaluation/community-rolling-action-plan/corap-table"
+    SVHCintent_url = "https://chem.echa.europa.eu/activity-lists/svhcIdentification"
+    SVHC_database_bytes = None
+    SVHC_database_bytes = asyncio.get_event_loop().run_until_complete(download_echachem_list(SVHCintent_url))
+    workbookSVHC = openpyxl.load_workbook(SVHC_database_bytes, data_only=True)
+    first_sheetSVHC = workbookSVHC.worksheets[0]
+    st.write("SVHC intent xlsx loaded")
+    # CoRAP database incl Substance Evaluation (SEv, previously on PACT)
+    CoRAP_url = "https://chem.echa.europa.eu/activity-lists/substanceEvaluation"
     CoRAP_database_bytes = None
-    CoRAP_database_bytes = download_echa_list(CoRAP_url, user_agents_list,source="CoRAP")
+    CoRAP_database_bytes = asyncio.get_event_loop().run_until_complete(download_echachem_list(CoRAP_url))
+    workbookCoRAP = openpyxl.load_workbook(CoRAP_database_bytes, data_only=True)
+    first_sheetCoRAP = workbookCoRAP.worksheets[0]
+    st.write("CoRAP xlsx loaded")
+    # Dossier Evaluation list (DEv, previously on PACT)
+    DEv_url = "https://chem.echa.europa.eu/activity-lists/dossierEvaluation"
+    DEv_database_bytes = None
+    DEv_database_bytes = asyncio.get_event_loop().run_until_complete(download_echachem_list(DEv_url))
+    workbookDEv = openpyxl.load_workbook(DEv_database_bytes, data_only=True)
+    first_sheetDEv = workbookDEv.worksheets[0]
+    st.write("DEv xlsx loaded")
 
-    # PACT database (function download_echa_list does not work for some reason for PACT)
-    PACT_url = "https://echa.europa.eu/en/pact"
-    PACT_database_bytes = None
-    responsePACT = requests.get(PACT_url,headers={'User-Agent': random.choice(user_agents_list)})
-    if responsePACT.status_code == 200:
-        soupPACT = BeautifulSoup(responsePACT.text, "html.parser")
-        # Find the <small> tag by class
-        small_tag = soupPACT.find("small", class_="search-results")
-        # Extract the number using regex
-        if small_tag:
-            text = small_tag.get_text(strip=True)
-            match = re.search(r"of\s+([\d,]+)\s+results", text)
-            if match:
-                unique_substances_PACT = match.group(1).replace(",", "")
-        soupPACT.decompose()  # Close/destroy the BS tree
-    # Data or payload sent with the POST request+
-    paramsPACT = {
-        "p_p_id": "disspact_WAR_disspactportlet",
-        "p_p_lifecycle": "2",
-        "p_p_state": "normal",
-        "p_p_mode": "view",
-        "p_p_resource_id": "exportResults",
-        "p_p_cacheability": "cacheLevelPage"
-    }
-    dataPACT = {
-    "_disspact_WAR_disspactportlet_formDate":int(round(time.time() * 1000)),
-    "_disspact_WAR_disspactportlet_exportColumns":"name,ecNumber,casNumber,DISLIST_CORAP,DISLIST_PBT,DISLIST_DOSSIER_EVALUATION,DISLIST_ED,DISLIST_ARN,DISLIST_ROI_CLH,DISLIST_ROI_SVHC,DISLIST_ANX_14_RECOMMENDATION,DISLIST_ROI_RESTRICTION",
-    "_disspact_WAR_disspactportlet_exportDislistsColumns":"DISLIST_CORAP,DISLIST_PBT,DISLIST_DOSSIER_EVALUATION,DISLIST_ED,DISLIST_ARN,DISLIST_ROI_CLH,DISLIST_ROI_SVHC,DISLIST_ANX_14_RECOMMENDATION,DISLIST_ROI_RESTRICTION",
-    "_disspact_WAR_disspactportlet_orderByCol":"name",
-    "_disspact_WAR_disspactportlet_orderByType":"asc",
-    "_disspact_WAR_disspactportlet_orderedSearchableShowListColumns":"DISLIST_PBT_diss_update_date,processes,DISLIST_PBT_diss_concern",
-    "_disspact_WAR_disspactportlet_orderedSearchableShowListElements":"DATE_PICKER,MULTI_VALUE,INPUT_TEXT",
-    "_disspact_WAR_disspactportlet_orderedSearchableShowListProcessColumns":"PACT,PACT,PACT",
-    "_disspact_WAR_disspactportlet_multiValueSearchOperatorprocesses":"AND",
-    "_disspact_WAR_disspactportlet_total":unique_substances_PACT,
-    "_disspact_WAR_disspactportlet_exportType":"xls"
-    }
-    # Headers (if required)
-    headersPACT = {
-    "User-Agent": random.choice(user_agents_list),
-    "Content-Type": "application/x-www-form-urlencoded",
-    }
-    # Send the POST request
-    responsePACT = requests.post(PACT_url, params=paramsPACT,data=dataPACT, headers=headersPACT, stream=True)
-    # Save the database in memory
-    if responsePACT.status_code == 200:
-        PACT_database_bytes = BytesIO(responsePACT.content)
-    else:
-        print("Failed to download the PACT list. Status code:", responsePACT.status_code)
-    responsePACT.close()
+    # Stil from old ECHA website (for now?)
+    # Assessment of Regulatory Needs
+    ARN_url = "https://www.echa.europa.eu/web/guest/assessment-regulatory-needs"
+    ARN_database_bytes = download_echa_list(ARN_url, user_agents_list, source="ARN")
+    workbookARN = openpyxl.load_workbook(ARN_database_bytes, data_only=True)
+    first_sheetARN = workbookARN.worksheets[0]
+    st.write("ARN xlsx loaded")
 
+
+    # >>> FROM UPLOADED DATABASES <<<
     # BPR ED
     if file_BPR_ED is not None:
         workbookBPR = openpyxl.load_workbook(file_BPR_ED)
@@ -414,7 +498,7 @@ def process_data(file):
             yield lst[i:i + chunk_size]
 
     logging.info("Starting nextSDS API")
-    st.info("Checking ECHA-CHEM API")
+    st.write("Checking ECHA-CHEM API")
 
     start_url = "https://api.nextsds.com/jobs/start"
     status_url = "https://api.nextsds.com/jobs/retrieve"
@@ -482,37 +566,37 @@ def process_data(file):
         workbook = openpyxl.load_workbook(PPP_database_bytes)
         sheetPPP = workbook.worksheets[0]
     except Exception as e:
-        st.error(f"❌ Failed to load one of the Excel files: {e}")
+        st.error(f"❌ Failed to load PPP Excel file: {e}")
         st.stop()
     try:
         workbookEDass = openpyxl.load_workbook(EDass_database_bytes)
         first_sheetEDass = workbookEDass.worksheets[0]
     except Exception as e:
-        st.error(f"❌ Failed to load one of the Excel files: {e}")
+        st.error(f"❌ Failed to load EDassessment Excel file: {e}")
         st.stop()
     try:
         workbookSVHC = openpyxl.load_workbook(SVHC_database_bytes)
         first_sheetSVHC = workbookSVHC.worksheets[0]
     except Exception as e:
-        st.error(f"❌ Failed to load one of the Excel files: {e}")
+        st.error(f"❌ Failed to load SVHC Excel file: {e}")
         st.stop()
     try:
         workbookSVHC_intent = openpyxl.load_workbook(SVHCintent_database_bytes)
         first_sheetSVHC_intent = workbookSVHC_intent.worksheets[0]
     except Exception as e:
-        st.error(f"❌ Failed to load one of the Excel files: {e}")
+        st.error(f"❌ Failed to load SVHCintent Excel file: {e}")
         st.stop()
     try:
         workbookPACT = openpyxl.load_workbook(PACT_database_bytes)
         first_sheetPACT = workbookPACT.worksheets[0]
     except Exception as e:
-        st.error(f"❌ Failed to load one of the Excel files: {e}")
+        st.error(f"❌ Failed to load PACT Excel file: {e}")
         st.stop()
     try:
         workbookCoRAP = openpyxl.load_workbook(CoRAP_database_bytes)
         first_sheetCoRAP = workbookCoRAP.worksheets[0]
     except Exception as e:
-        st.error(f"❌ Failed to load one of the Excel files: {e}")
+        st.error(f"❌ Failed to load CoRAP Excel file: {e}")
         st.stop()
 
     # st.write(CnL_json)
